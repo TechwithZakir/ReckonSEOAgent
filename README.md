@@ -4,9 +4,13 @@ Reckon SEO Autopilot is an independent, AI-native, multi-tenant SEO operations p
 Its core product is a governed agent runtime that turns website evidence into traceable
 recommendations and, with authorization, verified actions.
 
-This repository is the central platform. Agensi and Vibe96 are distribution layers, not
-separate copies of the SEO engine. The Aura HTML mock is a visual reference only; this
-project does not use the Frappe framework.
+This repository contains the central platform. The Aura HTML mock is a visual reference
+only; this project does not use the Frappe framework.
+
+## Ownership and license
+
+Copyright © 2026 Reckon Technologies Ltd. All rights reserved. This project is proprietary;
+see [LICENSE](./LICENSE). The package metadata uses `LicenseRef-Proprietary`.
 
 ## Development status
 
@@ -47,7 +51,8 @@ python -m uvicorn reckon_api.main:app --reload --app-dir apps\api\src
 Open `http://127.0.0.1:8000/docs` for the local OpenAPI UI and
 `http://127.0.0.1:8000/health/live` for the liveness response.
 Optional local settings are listed in [`.env.example`](./.env.example); copy it to `.env`
-before changing them.
+before changing them. Its author/license comments are informational only; ownership and
+license are defined by the project metadata and `LICENSE`, not runtime environment values.
 
 ## Tests
 

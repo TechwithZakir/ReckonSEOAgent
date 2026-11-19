@@ -8,6 +8,11 @@ version = "0.1.0"
 description = "AI-native, multi-tenant SEO operations platform"
 readme = "README.md"
 requires-python = ">=3.12"
+authors = [
+    { name = "Reckon Technologies Ltd." },
+]
+license = "LicenseRef-Proprietary"
+license-files = ["LICENSE"]
 dependencies = [
     "fastapi>=0.115,<1",
     "pydantic-settings>=2.6,<3",

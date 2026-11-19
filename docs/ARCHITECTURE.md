@@ -2,10 +2,9 @@
 
 ## Product boundary
 
-Reckon SEO Autopilot is the central SaaS platform. Agensi and Vibe96 may distribute it
-through thin, versioned integrations; they do not fork its agent or SEO engines. The Aura
-mock may inform dashboard styling but is not an application dependency. Frappe is not the
-platform framework.
+Reckon SEO Autopilot is a standalone, central SaaS platform with provider-neutral
+integrations. The Aura mock may inform dashboard styling but is not an application
+dependency. Frappe is not the platform framework.
 
 ## Runtime shape
 

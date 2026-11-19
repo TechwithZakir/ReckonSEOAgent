@@ -1,11 +1,13 @@
 # Reckon SEO Autopilot — Project Source of Truth
 
-The supplied solution design and UI mock define the product baseline. The implementation
-repository must not duplicate the project for Agensi or Vibe96.
+The supplied solution design and UI mock define the product baseline. This repository is
+the single implementation of the central platform.
 
 ## Authoritative Workspace Files
 
 - `README.md`: project overview, current delivery status and developer setup.
+- `LICENSE`: proprietary project license and copyright notice.
+- `pyproject.toml`: package author and machine-readable license metadata.
 - `.github/copilot-instructions.md`: repository coding and safety instructions.
 - `AGENTS.md`: agentic implementation workflow and engineering rules.
 - `skills/`: reusable specialist agent skills.

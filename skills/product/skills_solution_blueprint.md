@@ -1,11 +1,11 @@
 # Skill: Reckon SEO Autopilot Solution Blueprint
 
 ## Purpose
-Preserve and apply the approved product, architecture, marketplace and delivery decisions.
+Preserve and apply the approved product, architecture and delivery decisions.
 
 ## Product Direction
 - Independent AI-native, multi-tenant SaaS.
-- Central hosted platform with Agensi and Vibe96 distribution packages.
+- One central, hosted platform with provider-neutral integrations.
 - Agent runtime, specialist agents, memory/evidence and governance are core IP.
 - Browser automation and Claude integrations are optional; the SaaS runtime operates
   independently.
@@ -19,5 +19,5 @@ Agent foundation, website intelligence, crawler/audit evidence, scoped MCP tools
 approval execution and usage metering.
 
 ## Guardrails
-Marketplace rules and external provider capabilities must be verified before assumptions
-become implementation dependencies.
+External provider capabilities must be verified before assumptions become implementation
+dependencies.

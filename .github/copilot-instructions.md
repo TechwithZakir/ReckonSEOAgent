@@ -10,7 +10,7 @@ Act as a senior Python/FastAPI, React/TypeScript and SaaS security engineer.
 - Use a modular monolith with isolated browser and worker components.
 - Use provider-neutral model and CMS adapter interfaces.
 - Read reusable behavior from `skills/`; do not duplicate specialist logic.
-- Keep Agensi and Vibe96 distribution layers thin and use versioned central APIs.
+- Keep integrations thin and use stable, versioned APIs.
 
 ## Safety and Governance
 
