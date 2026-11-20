@@ -14,8 +14,13 @@ authors = [
 license = "LicenseRef-Proprietary"
 license-files = ["LICENSE"]
 dependencies = [
+    "alembic>=1.14,<2",
+    "dnspython>=2.7,<3",
     "fastapi>=0.115,<1",
+    "PyJWT[crypto]>=2.10,<3",
     "pydantic-settings>=2.6,<3",
+    "psycopg[binary]>=3.2,<4",
+    "SQLAlchemy>=2.0,<3",
 ]
 
 [project.optional-dependencies]
@@ -26,7 +31,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-where = ["apps/api/src"]
+where = ["apps/api/src", "packages/core/src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

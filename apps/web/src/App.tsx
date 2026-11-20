@@ -1,0 +1,597 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type { ReactNode, SVGProps } from 'react'
+import { useAuth } from './auth/AuthContext'
+import { WorkspaceSetup } from './components/WorkspaceSetup'
+import { WebsiteOnboarding } from './components/WebsiteOnboarding'
+import type { OrganizationContext } from './lib/organizations'
+import { checkPlatformHealth } from './lib/service-health'
+import type { PlatformHealth, ServiceState } from './lib/service-health'
+import './App.css'
+
+type IconName =
+  | 'activity'
+  | 'arrow'
+  | 'audit'
+  | 'book'
+  | 'check'
+  | 'chevron'
+  | 'globe'
+  | 'grid'
+  | 'moon'
+  | 'spark'
+  | 'sun'
+  | 'users'
+
+function Icon({
+  name,
+  ...props
+}: SVGProps<SVGSVGElement> & { name: IconName }) {
+  const paths: Record<IconName, ReactNode> = {
+    activity: (
+      <>
+        <path d="M3 12h4l3-8 4 16 3-8h4" />
+      </>
+    ),
+    arrow: (
+      <>
+        <path d="M7 17 17 7" />
+        <path d="M8 7h9v9" />
+      </>
+    ),
+    audit: (
+      <>
+        <path d="M8 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-3" />
+        <path d="M16 3h5v5" />
+        <path d="m10 14 2 2 9-9" />
+      </>
+    ),
+    book: (
+      <>
+        <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+        <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z" />
+        <path d="M8 7h8M8 11h7" />
+      </>
+    ),
+    check: <path d="m5 12 4 4L19 6" />,
+    chevron: <path d="m9 18 6-6-6-6" />,
+    globe: (
+      <>
+        <circle cx="12" cy="12" r="9" />
+        <path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18" />
+      </>
+    ),
+    grid: (
+      <>
+        <rect x="3" y="3" width="7" height="7" rx="1.5" />
+        <rect x="14" y="3" width="7" height="7" rx="1.5" />
+        <rect x="14" y="14" width="7" height="7" rx="1.5" />
+        <rect x="3" y="14" width="7" height="7" rx="1.5" />
+      </>
+    ),
+    moon: <path d="M20.9 13A9 9 0 0 1 11 3.1 9 9 0 1 0 20.9 13Z" />,
+    spark: (
+      <>
+        <path d="m12 3 1.9 5.8L20 11l-6.1 2.2L12 19l-1.9-5.8L4 11l6.1-2.2L12 3Z" />
+        <path d="m19 14 1 2.5 2.5 1-2.5 1L19 21l-1-2.5-2.5-1 2.5-1L19 14Z" />
+      </>
+    ),
+    sun: (
+      <>
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42" />
+      </>
+    ),
+    users: (
+      <>
+        <path d="M16 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+        <circle cx="10" cy="7" r="4" />
+        <path d="M20 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
+      </>
+    ),
+  }
+
+  return (
+    <svg
+      aria-hidden="true"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="1.7"
+      viewBox="0 0 24 24"
+      {...props}
+    >
+      {paths[name]}
+    </svg>
+  )
+}
+
+type NavigationItem = {
+  label: string
+  icon: IconName
+  available: boolean
+}
+
+const navigationGroups: { label: string; items: NavigationItem[] }[] = [
+  {
+    label: 'Workspace',
+    items: [
+      { label: 'Overview', icon: 'grid', available: true },
+      { label: 'Websites', icon: 'globe', available: false },
+      { label: 'Technical audits', icon: 'audit', available: false },
+    ],
+  },
+  {
+    label: 'Intelligence',
+    items: [
+      { label: 'Recommendations', icon: 'spark', available: false },
+      { label: 'Agent activity', icon: 'activity', available: false },
+    ],
+  },
+  {
+    label: 'Governance',
+    items: [{ label: 'Approvals', icon: 'check', available: false }],
+  },
+]
+
+const initialHealth: PlatformHealth = {
+  api: { state: 'checking', message: 'Checking API…' },
+  database: { state: 'checking', message: 'Checking database…' },
+}
+
+function stateLabel(state: ServiceState): string {
+  switch (state) {
+    case 'healthy':
+      return 'Operational'
+    case 'unavailable':
+      return 'Unavailable'
+    case 'checking':
+      return 'Checking'
+  }
+}
+
+function HealthRow({
+  label,
+  state,
+  message,
+}: {
+  label: string
+  state: ServiceState
+  message: string
+}) {
+  return (
+    <div className="health-row">
+      <div className="health-row__service">
+        <span className={`status-dot status-dot--${state}`} aria-hidden="true" />
+        <div>
+          <strong>{label}</strong>
+          <p>{message}</p>
+        </div>
+      </div>
+      <span className={`status-label status-label--${state}`}>
+        {stateLabel(state)}
+      </span>
+    </div>
+  )
+}
+
+function App() {
+  const auth = useAuth()
+  const [theme, setTheme] = useState<'light' | 'dark'>('light')
+  const [health, setHealth] = useState<PlatformHealth>(initialHealth)
+  const [checkedAt, setCheckedAt] = useState<Date | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
+  const [workspaceState, setWorkspaceState] = useState<{
+    subject: string
+    context: OrganizationContext
+  } | null>(null)
+  const requestId = useRef(0)
+  const subject = auth.user?.profile.sub ?? ''
+  const workspace =
+    subject && workspaceState?.subject === subject
+      ? workspaceState.context
+      : null
+  const handleWorkspaceConnected = useCallback(
+    (context: OrganizationContext) => {
+      if (subject) {
+        setWorkspaceState({ subject, context })
+      }
+    },
+    [subject],
+  )
+
+  const refreshHealth = useCallback(async (showSpinner = false) => {
+    const currentRequest = ++requestId.current
+    if (showSpinner) {
+      setRefreshing(true)
+    }
+
+    const nextHealth = await checkPlatformHealth()
+    if (requestId.current !== currentRequest) {
+      return
+    }
+
+    setHealth(nextHealth)
+    setCheckedAt(new Date())
+    setRefreshing(false)
+  }, [])
+
+  useEffect(() => {
+    const initialCheckId = window.setTimeout(() => void refreshHealth(), 0)
+    const intervalId = window.setInterval(() => void refreshHealth(), 30_000)
+
+    return () => {
+      requestId.current += 1
+      window.clearTimeout(initialCheckId)
+      window.clearInterval(intervalId)
+    }
+  }, [refreshHealth])
+
+  const toggleTheme = () => {
+    setTheme((currentTheme) => (currentTheme === 'light' ? 'dark' : 'light'))
+  }
+
+  return (
+    <div className="app-shell" data-theme={theme}>
+      <aside className="sidebar">
+        <a aria-label="Reckon SEO Autopilot home" className="brand" href="/">
+          <span className="brand__mark">
+            <Icon name="spark" />
+          </span>
+          <span className="brand__text">
+            <strong>reckon</strong>
+            <span>SEO AUTOPILOT</span>
+          </span>
+        </a>
+
+        <div
+          className="workspace-picker"
+          aria-label={workspace ? 'Workspace connected' : 'Workspace not connected'}
+        >
+          <span className="workspace-picker__icon">
+            <Icon name="users" />
+          </span>
+          <span className="workspace-picker__copy">
+            <span>WORKSPACE</span>
+            <strong>
+              {workspace
+                ? `${workspace.role} access`
+                : auth.status === 'signed-in'
+                  ? 'Setup required'
+                  : 'Not connected'}
+            </strong>
+          </span>
+          <Icon className="workspace-picker__chevron" name="chevron" />
+        </div>
+
+        <nav aria-label="Main navigation" className="sidebar-nav">
+          {navigationGroups.map((group) => (
+            <div className="nav-group" key={group.label}>
+              <p className="nav-group__label">{group.label}</p>
+              {group.items.map((item) => (
+                <button
+                  aria-current={item.available ? 'page' : undefined}
+                  aria-disabled={!item.available}
+                  className={`nav-item${item.available ? ' nav-item--active' : ''}`}
+                  disabled={!item.available}
+                  key={item.label}
+                  title={
+                    item.available
+                      ? undefined
+                      : `${item.label} is not available in this build`
+                  }
+                  type="button"
+                >
+                  <Icon name={item.icon} />
+                  <span>{item.label}</span>
+                  {!item.available && (
+                    <span className="nav-item__soon">Planned</span>
+                  )}
+                </button>
+              ))}
+            </div>
+          ))}
+        </nav>
+
+        <div className="sidebar-footer">
+          <div className="sidebar-status">
+            <span
+              className={`status-dot status-dot--${health.api.state}`}
+              aria-hidden="true"
+            />
+            <span>API {stateLabel(health.api.state).toLowerCase()}</span>
+          </div>
+          <a className="sidebar-link" href="/docs" rel="noreferrer" target="_blank">
+            <Icon name="book" />
+            <span>API reference</span>
+            <Icon className="sidebar-link__arrow" name="arrow" />
+          </a>
+          <p className="sidebar-version">Reckon SEO Autopilot · Local</p>
+        </div>
+      </aside>
+
+      <div className="main-panel">
+        <header className="topbar">
+          <div className="breadcrumbs">
+            <span>Workspace</span>
+            <Icon name="chevron" />
+            <strong>Overview</strong>
+          </div>
+          <div className="topbar__actions">
+            <span className="environment-pill">
+              <span className="environment-pill__dot" />
+              Local preview
+            </span>
+            {auth.user && (
+              <button
+                className="button button--secondary topbar__sign-out"
+                onClick={() => void auth.signOut()}
+                type="button"
+              >
+                Sign out
+              </button>
+            )}
+            <button
+              aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
+              className="icon-button"
+              onClick={toggleTheme}
+              title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
+              type="button"
+            >
+              <Icon name={theme === 'light' ? 'moon' : 'sun'} />
+            </button>
+          </div>
+        </header>
+
+        <main className="page-content">
+          <section aria-labelledby="page-title" className="page-intro">
+            <div>
+              <p className="eyebrow">
+                <span className="eyebrow__line" />
+                YOUR SEO OPERATIONS WORKSPACE
+              </p>
+              <h1 id="page-title">Evidence first. Progress that lasts.</h1>
+              <p className="page-intro__description">
+                A clear view of your platform foundations, with site evidence
+                and actions surfaced only when they are connected and verified.
+              </p>
+            </div>
+            <a className="button button--primary" href="/docs" rel="noreferrer" target="_blank">
+              <span>Explore API</span>
+              <Icon name="arrow" />
+            </a>
+          </section>
+
+          <section aria-labelledby="health-title" className="health-card">
+            <div className="section-heading">
+              <div>
+                <p className="section-kicker">SYSTEM STATUS</p>
+                <h2 id="health-title">Platform health</h2>
+              </div>
+              <button
+                className="button button--secondary"
+                disabled={refreshing}
+                onClick={() => void refreshHealth(true)}
+                type="button"
+              >
+                <Icon className={refreshing ? 'icon-spin' : ''} name="activity" />
+                <span>{refreshing ? 'Checking…' : 'Refresh status'}</span>
+              </button>
+            </div>
+
+            <div aria-live="polite" className="health-list">
+              <HealthRow
+                label="API process"
+                message={health.api.message}
+                state={health.api.state}
+              />
+              <HealthRow
+                label="Database"
+                message={health.database.message}
+                state={health.database.state}
+              />
+            </div>
+            <div className="health-card__footer">
+              <span>
+                {checkedAt
+                  ? `Last checked at ${checkedAt.toLocaleTimeString([], {
+                      hour: 'numeric',
+                      minute: '2-digit',
+                    })}`
+                  : 'Waiting for first status check'}
+              </span>
+              <a href="/docs" rel="noreferrer" target="_blank">
+                View API documentation <Icon name="arrow" />
+              </a>
+            </div>
+          </section>
+
+          <section aria-labelledby="workspace-title" className="workspace-card">
+            <div className="workspace-card__art" aria-hidden="true">
+              <div className="orbit orbit--outer" />
+              <div className="orbit orbit--inner" />
+              <div className="orbit-core">
+                <Icon name="spark" />
+              </div>
+              <span className="orbit-node orbit-node--one" />
+              <span className="orbit-node orbit-node--two" />
+              <span className="orbit-node orbit-node--three" />
+            </div>
+            <div className="workspace-card__content">
+              {auth.status === 'initializing' && (
+                <>
+                  <span className="status-label status-label--muted">Account access</span>
+                  <h2 id="workspace-title">Checking your sign-in</h2>
+                  <p>Validating the current browser session.</p>
+                </>
+              )}
+              {auth.config.kind === 'missing' && (
+                <>
+                  <span className="status-label status-label--muted">Sign-in setup</span>
+                  <h2 id="workspace-title">Connect an identity provider</h2>
+                  <p>
+                    Add the public OIDC authority and client ID to the root
+                    <code> .env</code>, then restart the dashboard. No sign-in is
+                    attempted with placeholder configuration.
+                  </p>
+                </>
+              )}
+              {auth.config.kind === 'invalid' && (
+                <>
+                  <span className="status-label status-label--unavailable">
+                    Sign-in configuration error
+                  </span>
+                  <h2 id="workspace-title">Identity provider setup needs attention</h2>
+                  <p>{auth.config.message}</p>
+                </>
+              )}
+              {auth.status === 'signed-out' && auth.config.kind === 'configured' && (
+                <>
+                  <span className="status-label status-label--muted">Account access</span>
+                  <h2 id="workspace-title">Sign in to connect a workspace</h2>
+                  <p>
+                    Sign-in uses OIDC authorization code with PKCE. The access
+                    token remains in memory; the verified API controls tenant
+                    access. An operator must provision your identity before
+                    organization APIs are available.
+                  </p>
+                  {auth.error && (
+                    <p aria-live="polite" className="workspace-setup__error" role="alert">
+                      {auth.error}
+                    </p>
+                  )}
+                  <button
+                    className="button button--primary"
+                    onClick={() => void auth.signIn()}
+                    type="button"
+                  >
+                    Sign in
+                  </button>
+                </>
+              )}
+              {auth.status === 'error' && (
+                <>
+                  <span className="status-label status-label--unavailable">
+                    Account access unavailable
+                  </span>
+                  <h2 id="workspace-title">Sign-in could not be completed</h2>
+                  <p>{auth.error}</p>
+                  {auth.config.kind === 'configured' && (
+                    <button
+                      className="button button--primary"
+                      onClick={() => void auth.signIn()}
+                      type="button"
+                    >
+                      Try sign in again
+                    </button>
+                  )}
+                </>
+              )}
+              {auth.status === 'signed-in' && auth.user?.access_token && (
+                <>
+                  <span className="status-label status-label--healthy">
+                    Authenticated session
+                  </span>
+                  <h2 id="workspace-title">
+                    {workspace ? 'Your workspace is connected' : 'Connect a workspace'}
+                  </h2>
+                  <p>
+                    Organization access is checked by the API on every connection
+                    and restored from this tab only after membership is verified.
+                    Website onboarding and SEO evidence are separate next steps.
+                  </p>
+                  {auth.error && (
+                    <p aria-live="polite" className="workspace-setup__error" role="alert">
+                      {auth.error}
+                    </p>
+                  )}
+                  <WorkspaceSetup
+                    accessToken={auth.user.access_token}
+                    current={workspace ?? undefined}
+                    onConnected={handleWorkspaceConnected}
+                  />
+                  {workspace && (
+                    <WebsiteOnboarding
+                      accessToken={auth.user.access_token}
+                      key={workspace.organization_id}
+                      organization={workspace}
+                    />
+                  )}
+                </>
+              )}
+              <a className="text-link" href="/docs" rel="noreferrer" target="_blank">
+                Review the available API <Icon name="arrow" />
+              </a>
+            </div>
+          </section>
+
+          <section aria-labelledby="capabilities-title" className="capabilities">
+            <div className="section-heading section-heading--compact">
+              <div>
+                <p className="section-kicker">PRODUCT FOUNDATION</p>
+                <h2 id="capabilities-title">What is taking shape</h2>
+              </div>
+              <span className="section-note">Not live yet</span>
+            </div>
+            <div className="capability-grid">
+              <CapabilityCard
+                icon="globe"
+                number="01"
+                title="Verified website evidence"
+                description="Connect an authorized site before crawl or audit data appears."
+              />
+              <CapabilityCard
+                icon="audit"
+                number="02"
+                title="Deterministic SEO audits"
+                description="Repeatable checks will be separated from AI interpretation."
+              />
+              <CapabilityCard
+                icon="check"
+                number="03"
+                title="Governed recommendations"
+                description="Changes require policy checks, approval where needed, and verification."
+              />
+            </div>
+          </section>
+
+          <footer className="page-footer">
+            <span>Reckon SEO Autopilot</span>
+            <span>Built around evidence, authorization, and verification.</span>
+          </footer>
+        </main>
+      </div>
+    </div>
+  )
+}
+
+function CapabilityCard({
+  icon,
+  number,
+  title,
+  description,
+}: {
+  icon: IconName
+  number: string
+  title: string
+  description: string
+}) {
+  return (
+    <article className="capability-card">
+      <div className="capability-card__top">
+        <span className="capability-card__icon">
+          <Icon name={icon} />
+        </span>
+        <span className="capability-card__number">{number}</span>
+      </div>
+      <h3>{title}</h3>
+      <p>{description}</p>
+      <span className="capability-card__status">
+        <span className="status-dot status-dot--checking" aria-hidden="true" />
+        Planned
+      </span>
+    </article>
+  )
+}
+
+export default App
