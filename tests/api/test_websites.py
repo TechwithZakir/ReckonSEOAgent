@@ -12,11 +12,13 @@ from sqlalchemy.pool import StaticPool
 from reckon_api.config import Settings
 from reckon_api.dependencies import get_database_session
 from reckon_api.main import create_app
+from reckon_core.crawler import CrawlDisallowed, CrawlResult, CrawlUnavailable
 from reckon_core.dns import DnsTxtLookupUnavailable
 from reckon_core.oidc import InvalidBearerToken
 from reckon_core.persistence import (
     AuditEvent,
     Base,
+    CrawlRun,
     ExternalIdentity,
     Organization,
     OrganizationMembership,
@@ -53,6 +55,18 @@ class StaticDnsResolver:
 class UnavailableDnsResolver:
     def records(self, _: str) -> tuple[str, ...]:
         raise DnsTxtLookupUnavailable
+
+
+class StaticHomepageCrawler:
+    def __init__(self, outcome: CrawlResult | Exception) -> None:
+        self.outcome = outcome
+        self.calls: list[tuple[str, str]] = []
+
+    def crawl(self, scheme: str, host: str) -> CrawlResult:
+        self.calls.append((scheme, host))
+        if isinstance(self.outcome, Exception):
+            raise self.outcome
+        return self.outcome
 
 
 @pytest.fixture
@@ -150,6 +164,23 @@ def create_website(
             idempotency_key=key,
         )
     )
+
+
+def register_verified_website(
+    app: FastAPI,
+    factory: sessionmaker[Session],
+    organization_id: UUID,
+    url: str = "https://crawl.example.com",
+    key: str = "site-create-001",
+) -> UUID:
+    created = create_website(app, organization_id, url, key=key)
+    website_id = UUID(created.json()["website_id"])
+    with factory() as session:
+        website = session.get(Website, website_id)
+        assert website is not None
+        website.is_verified = True
+        session.commit()
+    return website_id
 
 
 def test_website_creation_returns_dns_challenge_and_audits_without_token(
@@ -368,3 +399,333 @@ def test_unmapped_identity_cannot_register_a_website(
     )
 
     assert response.status_code == 401
+
+
+def test_member_crawl_is_persisted_audited_and_idempotent(
+    website_api: tuple[FastAPI, sessionmaker[Session], UUID],
+) -> None:
+    app, factory, organization_id = website_api
+    website_id = register_verified_website(app, factory, organization_id)
+    crawler = StaticHomepageCrawler(
+        CrawlResult(
+            final_url="https://crawl.example.com/",
+            status_code=200,
+            content_type="text/html",
+            bytes_read=18,
+            title="Homepage",
+            redirect_count=0,
+        )
+    )
+    app.state.homepage_crawler = crawler
+    path = (
+        f"/api/v1/organizations/{organization_id}/websites/"
+        f"{website_id}/crawl"
+    )
+
+    first = asyncio.run(
+        website_request(
+            app,
+            "POST",
+            path,
+            token="editor-token",
+            idempotency_key="crawl-run-001",
+        )
+    )
+    replay = asyncio.run(
+        website_request(
+            app,
+            "POST",
+            path,
+            token="editor-token",
+            idempotency_key="crawl-run-001",
+        )
+    )
+    other_website_id = register_verified_website(
+        app,
+        factory,
+        organization_id,
+        "https://othercrawl.example.com",
+        key="site-create-002",
+    )
+    conflicting_replay = asyncio.run(
+        website_request(
+            app,
+            "POST",
+            (
+                f"/api/v1/organizations/{organization_id}/websites/"
+                f"{other_website_id}/crawl"
+            ),
+            token="editor-token",
+            idempotency_key="crawl-run-001",
+        )
+    )
+
+    assert first.status_code == 200
+    assert first.json()["status"] == "completed"
+    assert first.json()["title"] == "Homepage"
+    assert replay.status_code == 200
+    assert replay.json() == first.json()
+    assert conflicting_replay.status_code == 409
+    assert crawler.calls == [("https", "crawl.example.com")]
+    with factory() as session:
+        run = session.get(CrawlRun, UUID(first.json()["crawl_id"]))
+        assert run is not None
+        assert run.status == "completed"
+        assert run.bytes_read == 18
+        actions = session.scalars(
+            select(AuditEvent.action).where(AuditEvent.resource_id == run.id)
+        ).all()
+        assert set(actions) == {"crawl.started", "crawl.completed"}
+
+
+def test_member_can_list_paginated_crawl_history_for_own_website(
+    website_api: tuple[FastAPI, sessionmaker[Session], UUID],
+) -> None:
+    app, factory, organization_id = website_api
+    website_id = register_verified_website(app, factory, organization_id)
+    other_website_id = register_verified_website(
+        app,
+        factory,
+        organization_id,
+        "https://othercrawl.example.com",
+        key="site-create-002",
+    )
+    app.state.homepage_crawler = StaticHomepageCrawler(
+        CrawlResult(
+            final_url="https://crawl.example.com/",
+            status_code=200,
+            content_type="text/html",
+            bytes_read=18,
+            title="Homepage",
+            redirect_count=0,
+        )
+    )
+    crawl_path = (
+        f"/api/v1/organizations/{organization_id}/websites/"
+        f"{website_id}/crawl"
+    )
+    for key in ("crawl-history-001", "crawl-history-002", "crawl-history-003"):
+        response = asyncio.run(
+            website_request(
+                app,
+                "POST",
+                crawl_path,
+                token="editor-token",
+                idempotency_key=key,
+            )
+        )
+        assert response.status_code == 200
+
+    history_path = (
+        f"/api/v1/organizations/{organization_id}/websites/"
+        f"{website_id}/crawls"
+    )
+    first_page = asyncio.run(
+        website_request(app, "GET", f"{history_path}?limit=2", token="editor-token")
+    )
+    second_page = asyncio.run(
+        website_request(
+            app,
+            "GET",
+            f"{history_path}?limit=2&offset=2",
+            token="editor-token",
+        )
+    )
+    other_website_history = asyncio.run(
+        website_request(
+            app,
+            "GET",
+            (
+                f"/api/v1/organizations/{organization_id}/websites/"
+                f"{other_website_id}/crawls"
+            ),
+            token="editor-token",
+        )
+    )
+
+    assert first_page.status_code == second_page.status_code == 200
+    assert len(first_page.json()) == 2
+    assert len(second_page.json()) == 1
+    assert all(item["status"] == "completed" for item in first_page.json())
+    assert all(item["website_id"] == str(website_id) for item in first_page.json())
+    assert other_website_history.status_code == 200
+    assert other_website_history.json() == []
+
+
+def test_crawl_history_requires_active_tenant_membership_and_bounds_page_size(
+    website_api: tuple[FastAPI, sessionmaker[Session], UUID],
+) -> None:
+    app, factory, organization_id = website_api
+    website_id = register_verified_website(app, factory, organization_id)
+    path = (
+        f"/api/v1/organizations/{organization_id}/websites/"
+        f"{website_id}/crawls"
+    )
+
+    unauthorized = asyncio.run(
+        website_request(
+            app,
+            "GET",
+            (
+                f"/api/v1/organizations/{uuid4()}/websites/"
+                f"{website_id}/crawls"
+            ),
+        )
+    )
+    invalid_limit = asyncio.run(
+        website_request(app, "GET", f"{path}?limit=101")
+    )
+    missing_website = asyncio.run(
+        website_request(
+            app,
+            "GET",
+            (
+                f"/api/v1/organizations/{organization_id}/websites/"
+                f"{uuid4()}/crawls"
+            ),
+        )
+    )
+
+    assert unauthorized.status_code == 404
+    assert invalid_limit.status_code == 422
+    assert missing_website.status_code == 404
+
+
+def test_failed_crawl_consumes_the_organization_daily_budget(
+    website_api: tuple[FastAPI, sessionmaker[Session], UUID],
+) -> None:
+    app, factory, organization_id = website_api
+    app.state.settings = Settings(
+        _env_file=None,
+        environment="test",
+        crawl_daily_limit=1,
+    )
+    website_id = register_verified_website(app, factory, organization_id)
+    crawler = StaticHomepageCrawler(CrawlUnavailable("network unavailable"))
+    app.state.homepage_crawler = crawler
+    path = (
+        f"/api/v1/organizations/{organization_id}/websites/"
+        f"{website_id}/crawl"
+    )
+
+    failed = asyncio.run(
+        website_request(
+            app,
+            "POST",
+            path,
+            idempotency_key="crawl-budget-001",
+        )
+    )
+    over_budget = asyncio.run(
+        website_request(
+            app,
+            "POST",
+            path,
+            idempotency_key="crawl-budget-002",
+        )
+    )
+
+    assert failed.status_code == 503
+    assert over_budget.status_code == 429
+    assert crawler.calls == [("https", "crawl.example.com")]
+    with factory() as session:
+        run = session.scalar(select(CrawlRun))
+        assert run is not None
+        assert run.status == "failed"
+        assert run.error_code == "crawl_unavailable"
+        assert session.scalar(select(func.count(CrawlRun.id))) == 1
+
+
+def test_disallowed_crawl_is_audited_and_idempotently_replayed(
+    website_api: tuple[FastAPI, sessionmaker[Session], UUID],
+) -> None:
+    app, factory, organization_id = website_api
+    website_id = register_verified_website(app, factory, organization_id)
+    crawler = StaticHomepageCrawler(CrawlDisallowed("robots.txt denied access"))
+    app.state.homepage_crawler = crawler
+    path = (
+        f"/api/v1/organizations/{organization_id}/websites/"
+        f"{website_id}/crawl"
+    )
+
+    first = asyncio.run(
+        website_request(app, "POST", path, idempotency_key="crawl-policy-001")
+    )
+    replay = asyncio.run(
+        website_request(app, "POST", path, idempotency_key="crawl-policy-001")
+    )
+
+    assert first.status_code == replay.status_code == 200
+    assert first.json()["status"] == "disallowed"
+    assert replay.json() == first.json()
+    assert crawler.calls == [("https", "crawl.example.com")]
+    with factory() as session:
+        run = session.get(CrawlRun, UUID(first.json()["crawl_id"]))
+        assert run is not None
+        assert run.error_code == "robots_disallowed"
+
+
+def test_unverified_website_cannot_be_crawled(
+    website_api: tuple[FastAPI, sessionmaker[Session], UUID],
+) -> None:
+    app, factory, organization_id = website_api
+    created = create_website(app, organization_id, "https://crawl.example.com")
+    website_id = UUID(created.json()["website_id"])
+    crawler = StaticHomepageCrawler(
+        CrawlResult(
+            final_url="https://crawl.example.com/",
+            status_code=200,
+            content_type="text/html",
+            bytes_read=0,
+            title=None,
+            redirect_count=0,
+        )
+    )
+    app.state.homepage_crawler = crawler
+
+    response = asyncio.run(
+        website_request(
+            app,
+            "POST",
+            f"/api/v1/organizations/{organization_id}/websites/{website_id}/crawl",
+            idempotency_key="crawl-pending-001",
+        )
+    )
+
+    assert response.status_code == 409
+    assert crawler.calls == []
+    with factory() as session:
+        assert session.scalar(select(func.count(CrawlRun.id))) == 0
+
+
+def test_crawl_requires_active_tenant_membership(
+    website_api: tuple[FastAPI, sessionmaker[Session], UUID],
+) -> None:
+    app, _, _ = website_api
+    crawler = StaticHomepageCrawler(
+        CrawlResult(
+            final_url="https://crawl.example.com/",
+            status_code=200,
+            content_type="text/html",
+            bytes_read=0,
+            title=None,
+            redirect_count=0,
+        )
+    )
+    app.state.homepage_crawler = crawler
+    organization_id = uuid4()
+
+    response = asyncio.run(
+        website_request(
+            app,
+            "POST",
+            (
+                f"/api/v1/organizations/{organization_id}/websites/"
+                f"{uuid4()}/crawl"
+            ),
+            idempotency_key="crawl-tenant-001",
+        )
+    )
+
+    assert response.status_code == 404
+    assert crawler.calls == []

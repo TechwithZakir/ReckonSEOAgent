@@ -54,23 +54,29 @@ ports. Verification performs a bounded TXT lookup only; it does not make an HTTP
 the submitted website. The shared core now includes a bounded single-homepage fetcher: it
 validates all A/AAAA answers, connects to a checked IP without resolving the hostname again,
 restricts redirects to the verified host, and caps redirects, response bytes, and per-request
-socket-operation timeouts. Aggregate timeout behavior still needs transport-level verification.
-It is not exposed through the API or dashboard. Crawl history, tenant metering, robots.txt
-handling, and end-to-end live-network verification remain unimplemented.
+monotonic deadlines across response headers and bodies. Responses that arrive after the
+aggregate crawl deadline are rejected; DNS A/AAAA lookups have separate per-query bounds.
+The crawler fetches and enforces `robots.txt` before the homepage; only 404/410 are treated
+as absent, other 4xx responses deny crawling, and server errors fail closed. It is not exposed
+through the dashboard. The authenticated crawl API accepts active members and verified sites,
+reserves a per-organization daily budget before network access, and persists idempotent
+tenant-scoped outcomes plus audit events. The default cap is 10 attempts per organization per
+UTC day, including failures and interrupted runs. Plan-specific quotas and end-to-end
+live-network verification remain unimplemented.
 
 The database application role must be least-privileged and must not be a superuser or have
 `BYPASSRLS`; tenant-scoped requests set transaction-local organization context before
 reading organization membership. External identity mappings and user accounts are global
 identity records, not organization-owned rows.
 
-Migrations through `0002_websites` have been applied to local PostgreSQL 18.7. The `reckon`
+Migrations through `0003_site_crawl_runs` have been applied to local PostgreSQL 18.7. The `reckon`
 application role was verified as non-superuser and non-`BYPASSRLS`; rollback-only integration
-checks cover organization and website RLS.
+checks cover organization, website, and crawl-run RLS.
 
 Physical schema names are intentionally compact (`orgs`, `org_members`, `usr_id`, `org_id`,
 `idem_key`). Python model attributes and external API fields remain descriptive. Audit
-events use short physical columns and RLS on `org_id`. Websites and their idempotency records
-use `sites` and `site_create_reqs`, both forced through tenant RLS.
+events use short physical columns and RLS on `org_id`. Websites, idempotency records and crawl
+history use `sites`, `site_create_reqs` and `site_crawl_runs`, all forced through tenant RLS.
 
 ## Non-negotiable boundaries
 

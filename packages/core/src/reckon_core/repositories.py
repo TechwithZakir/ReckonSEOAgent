@@ -1,15 +1,16 @@
 import hashlib
 import hmac
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from reckon_core.persistence import (
     AuditEvent,
+    CrawlRun,
     ExternalIdentity,
     Organization,
     OrganizationCreationRequest,
@@ -18,6 +19,7 @@ from reckon_core.persistence import (
     Website,
     WebsiteCreationRequest,
 )
+from reckon_core.crawler import CrawlResult
 from reckon_core.tenancy import (
     OrganizationRole,
     TenantAccessDenied,
@@ -33,6 +35,18 @@ class WebsiteAlreadyExists(ValueError):
 
 
 class WebsiteNotFound(LookupError):
+    pass
+
+
+class WebsiteNotVerified(ValueError):
+    pass
+
+
+class CrawlBudgetExceeded(ValueError):
+    pass
+
+
+class CrawlRequestInProgress(ValueError):
     pass
 
 
@@ -360,6 +374,186 @@ class SqlAlchemyWebsiteRepository:
         )
         self._session.flush()
         return website
+
+    def _set_tenant(self, organization_id: UUID) -> None:
+        if self._is_postgresql:
+            self._session.execute(
+                text("SELECT set_config('app.org_id', :organization_id, true)"),
+                {"organization_id": str(organization_id)},
+            )
+
+
+class SqlAlchemyCrawlRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+        self._is_postgresql = session.get_bind().dialect.name == "postgresql"
+
+    def reserve(
+        self,
+        organization_id: UUID,
+        website_id: UUID,
+        actor_user_id: UUID,
+        request_id: UUID,
+        idempotency_key: str,
+        daily_limit: int,
+    ) -> tuple[Website, CrawlRun, bool]:
+        self._set_tenant(organization_id)
+        found_organization = self._session.scalar(
+            select(Organization.id)
+            .where(Organization.id == organization_id)
+            .with_for_update()
+        )
+        if found_organization is None:
+            raise TenantAccessDenied
+
+        website = self._session.scalar(
+            select(Website).where(
+                Website.organization_id == organization_id,
+                Website.id == website_id,
+            )
+        )
+        if website is None:
+            raise WebsiteNotFound
+        if not website.is_verified:
+            raise WebsiteNotVerified
+
+        request_hash = hashlib.sha256(str(website_id).encode("ascii")).hexdigest()
+        existing_run = self._session.scalar(
+            select(CrawlRun)
+            .where(
+                CrawlRun.organization_id == organization_id,
+                CrawlRun.idempotency_key == idempotency_key,
+            )
+            .with_for_update()
+        )
+        if existing_run is not None:
+            if not hmac.compare_digest(existing_run.request_hash, request_hash):
+                raise IdempotencyConflict
+            return website, existing_run, True
+
+        now = datetime.now(timezone.utc)
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = day_start + timedelta(days=1)
+        used = self._session.scalar(
+            select(func.count(CrawlRun.id)).where(
+                CrawlRun.organization_id == organization_id,
+                CrawlRun.started_at >= day_start,
+                CrawlRun.started_at < day_end,
+            )
+        ) or 0
+        if used >= daily_limit:
+            raise CrawlBudgetExceeded
+
+        run = CrawlRun(
+            id=uuid4(),
+            organization_id=organization_id,
+            website_id=website.id,
+            actor_user_id=actor_user_id,
+            request_id=request_id,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+            status="running",
+            started_at=now,
+        )
+        self._session.add(run)
+        self._session.add(
+            AuditEvent(
+                organization_id=organization_id,
+                actor_user_id=actor_user_id,
+                action="crawl.started",
+                resource_type="crawl_run",
+                resource_id=run.id,
+                request_id=request_id,
+                details={
+                    "host": website.host,
+                    "budget_limit": str(daily_limit),
+                    "budget_used": str(used + 1),
+                },
+            )
+        )
+        self._session.flush()
+        return website, run, False
+
+    def list_for_website(
+        self,
+        organization_id: UUID,
+        website_id: UUID,
+        limit: int,
+        offset: int,
+    ) -> list[CrawlRun]:
+        self._set_tenant(organization_id)
+        website_exists = self._session.scalar(
+            select(Website.id).where(
+                Website.organization_id == organization_id,
+                Website.id == website_id,
+            )
+        )
+        if website_exists is None:
+            raise WebsiteNotFound
+
+        return list(
+            self._session.scalars(
+                select(CrawlRun)
+                .where(
+                    CrawlRun.organization_id == organization_id,
+                    CrawlRun.website_id == website_id,
+                )
+                .order_by(CrawlRun.started_at.desc(), CrawlRun.id.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+        )
+
+    def finish(
+        self,
+        run: CrawlRun,
+        actor_user_id: UUID,
+        request_id: UUID,
+        status: str,
+        result: CrawlResult | None = None,
+        error_code: str | None = None,
+    ) -> CrawlRun:
+        if status not in {"completed", "disallowed", "failed"}:
+            raise ValueError("A crawl run cannot be finished with this status.")
+        self._set_tenant(run.organization_id)
+        if run.status != "running":
+            raise CrawlRequestInProgress
+
+        run.status = status
+        run.completed_at = datetime.now(timezone.utc)
+        run.error_code = error_code
+        details = {
+            "site_id": str(run.website_id),
+            "status": status,
+        }
+        if result is not None:
+            run.final_url = result.final_url
+            run.http_status = result.status_code
+            run.content_type = result.content_type[:255]
+            run.bytes_read = result.bytes_read
+            run.title = result.title
+            run.redirect_count = result.redirect_count
+            details.update(
+                {
+                    "http_status": str(result.status_code),
+                    "bytes_read": str(result.bytes_read),
+                    "redirect_count": str(result.redirect_count),
+                }
+            )
+
+        self._session.add(
+            AuditEvent(
+                organization_id=run.organization_id,
+                actor_user_id=actor_user_id,
+                action=f"crawl.{status}",
+                resource_type="crawl_run",
+                resource_id=run.id,
+                request_id=request_id,
+                details=details,
+            )
+        )
+        self._session.flush()
+        return run
 
     def _set_tenant(self, organization_id: UUID) -> None:
         if self._is_postgresql:

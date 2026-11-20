@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import SecretStr, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     oidc_issuer: str | None = None
     oidc_audience: str | None = None
     oidc_jwks_url: str | None = None
+    crawl_daily_limit: int = Field(default=10, ge=1)
 
     model_config = SettingsConfigDict(
         env_prefix="RECKON_",

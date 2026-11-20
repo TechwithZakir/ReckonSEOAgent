@@ -11,6 +11,7 @@ def test_physical_database_schema_uses_short_table_and_column_names() -> None:
         "audit_events",
         "sites",
         "site_create_reqs",
+        "site_crawl_runs",
     }
     assert set(Base.metadata.tables["identities"].columns.keys()) == {
         "issuer",
@@ -55,4 +56,23 @@ def test_physical_database_schema_uses_short_table_and_column_names() -> None:
         "idem_key",
         "req_hash",
         "site_id",
+    }
+    assert set(Base.metadata.tables["site_crawl_runs"].columns.keys()) == {
+        "id",
+        "org_id",
+        "site_id",
+        "actor_usr_id",
+        "req_id",
+        "idem_key",
+        "req_hash",
+        "status",
+        "started_at",
+        "completed_at",
+        "final_url",
+        "http_status",
+        "content_type",
+        "bytes_read",
+        "title",
+        "redirect_count",
+        "error_code",
     }

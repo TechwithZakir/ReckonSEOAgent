@@ -9,6 +9,7 @@ from reckon_api.dependencies import (
     get_authenticated_principal,
     get_database_session,
 )
+from reckon_api.tenant_access import resolve_organization_access
 from reckon_core.persistence import Website
 from reckon_core.dns import (
     DnsTxtLookup,
@@ -17,7 +18,6 @@ from reckon_core.dns import (
 )
 from reckon_core.repositories import (
     IdempotencyConflict,
-    SqlAlchemyMembershipRepository,
     SqlAlchemyWebsiteRepository,
     WebsiteAlreadyExists,
     WebsiteNotFound,
@@ -26,7 +26,6 @@ from reckon_core.tenancy import (
     AuthenticatedPrincipal,
     OrganizationRole,
     TenantAccessDenied,
-    TenantAccessService,
     TenantContext,
 )
 from reckon_core.websites import (
@@ -63,21 +62,6 @@ class WebsiteVerificationResponse(BaseModel):
     verification_status: Literal["verified"]
 
 
-def _resolve_organization_access(
-    principal: AuthenticatedPrincipal,
-    organization_id: UUID,
-    session: Session,
-) -> TenantContext:
-    access = TenantAccessService(SqlAlchemyMembershipRepository(session))
-    try:
-        return access.resolve(principal, organization_id)
-    except TenantAccessDenied as error:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Organization not found.",
-        ) from error
-
-
 def _require_manager(context: TenantContext) -> None:
     if context.role not in {OrganizationRole.OWNER, OrganizationRole.ADMIN}:
         raise HTTPException(
@@ -109,7 +93,7 @@ def list_websites(
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     session: Session = Depends(get_database_session),
 ) -> list[WebsiteResponse]:
-    context = _resolve_organization_access(principal, organization_id, session)
+    context = resolve_organization_access(principal, organization_id, session)
     include_token = context.role in {
         OrganizationRole.OWNER,
         OrganizationRole.ADMIN,
@@ -144,7 +128,7 @@ def create_website(
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     session: Session = Depends(get_database_session),
 ) -> WebsiteResponse:
-    context = _resolve_organization_access(principal, organization_id, session)
+    context = resolve_organization_access(principal, organization_id, session)
     _require_manager(context)
     try:
         normalized = normalize_website_url(request.url)
@@ -200,7 +184,7 @@ def verify_website(
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     session: Session = Depends(get_database_session),
 ) -> WebsiteVerificationResponse:
-    context = _resolve_organization_access(principal, organization_id, session)
+    context = resolve_organization_access(principal, organization_id, session)
     _require_manager(context)
     repository = SqlAlchemyWebsiteRepository(session)
     try:

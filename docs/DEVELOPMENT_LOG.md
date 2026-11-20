@@ -143,14 +143,40 @@ milestone details here.
 - Added an isolated, single-homepage fetcher. It connects directly to a prevalidated IP
   while retaining the original hostname for the HTTP Host header and TLS verification.
 - Redirects are manual, capped, restricted to the registered hostname, and re-resolved before
-  each request; HTTPS redirects cannot downgrade to HTTP. Socket-operation timeouts and
-  response bytes are bounded, compressed responses are rejected, and the HTML title is parsed
-  deterministically. Aggregate timeout behavior still needs transport-level verification.
+  each request; HTTPS redirects cannot downgrade to HTTP. HTTP status, header and body reads
+  use a shared monotonic request deadline, late results are rejected against the aggregate
+  crawl deadline, response bytes are bounded, compressed responses are rejected, and the HTML
+  title is parsed deterministically. DNS A/AAAA lookups have independent per-query bounds.
+- Added robots.txt preflight before homepage fetching. Rules are evaluated for the crawler's
+  product token and same-host redirects use the pinned transport. Only 404/410 mean no policy;
+  other 4xx responses deny crawling, and server errors or network failures fail closed.
 - Added focused tests for IP pin selection, same-host redirect revalidation, external redirect
   rejection, HTTPS downgrade, non-standard ports, credentials, and private/mixed DNS answers.
-- This is core-only groundwork: it is not connected to an API route, persisted crawl history,
-  tenant usage metering, robots.txt policy, or dashboard controls. Tests use injected DNS and
-  transport doubles; no live external website was fetched.
+- Added loopback-only slow-header and slow-body regression tests for request deadline
+  enforcement and a fake-clock test ensuring the crawler rejects a response returned after
+  its aggregate limit.
+- Added robots tests for disallowed paths and fail-closed 403/429/5xx responses.
+- DNS and transport doubles cover policy behavior; loopback tests exercise the real HTTP
+  transport. No live external website was fetched.
+
+### Tenant-authorized crawl API
+
+- Added `site_crawl_runs` with forced organization RLS, a composite website/organization
+  foreign key, audit actor/request attribution, idempotency, and retained page evidence.
+- The crawl endpoint accepts active organization members and verified websites only. It
+  serializes budget reservations on the organization row, commits the reservation before
+  network access, and enforces a configurable default of 10 attempts per UTC day per tenant.
+  Failed and interrupted runs consume budget; same-key completed/disallowed retries replay
+  the stored result without another crawl.
+- Crawl outcomes and lifecycle audit events are tenant-scoped. Robots-denied runs are recorded
+  distinctly; policy failures return 422 and network failures return 503 without claiming a
+  successful crawl.
+- Added an active-member crawl-history endpoint scoped to one website, with stable newest-first
+  ordering, bounded limit/offset pagination and tenant-context RLS.
+- Applied migration `0003_site_crawl_runs` to local PostgreSQL 18.7 and extended the live RLS
+  integration test. The API uses an injected crawler in tests; no live external site was fetched.
+- The dashboard remains read-only for crawling. Multi-page crawl, plan-specific quotas,
+  retention/cleanup, and background execution remain unimplemented.
 
 ## Explicitly not implemented yet
 
@@ -159,10 +185,10 @@ milestone details here.
   access organization APIs.
 - Local PostgreSQL migration and RLS behavior are verified. Production database provisioning,
   backup/restore, and deployment configuration remain unverified.
-- The core crawler is not yet exposed to users. API authorization/audit integration, robots.txt
-  handling, tenant crawl budgets, persisted evidence, and dashboard controls remain unimplemented.
-- No fine-grained permission policy, complete audit event history, website crawling,
-  Redis/Celery jobs, usage metering, MCP endpoint or CMS writes.
+- Crawl scheduling, multi-page crawling, dashboard controls, plan-specific quotas, and
+  retention/cleanup remain unimplemented.
+- No fine-grained permission policy, complete audit event history, Redis/Celery jobs,
+  broader usage metering, MCP endpoint or CMS writes.
 - The dashboard is not yet an SEO operations interface and displays no crawl metrics.
 - The database role used by deployment must not be a superuser or have `BYPASSRLS`.
 
@@ -237,6 +263,23 @@ milestone details here.
 - The restarted local API reports readiness and exposes both website routes in OpenAPI.
 - Browser smoke check shows API/database operational and the explicit OIDC setup prompt;
   no real login or live DNS challenge was attempted.
+
+## Development continuation — 2026-11-20
+
+- Hardened the pinned HTTP transport with a monotonic deadline-aware response stream. HTTP
+  status/header parsing and incremental body reads now share the per-request deadline, while
+  the crawler rejects results returned after its aggregate deadline.
+- Added loopback tests for a normal pinned response and slowly trickled headers/body, plus a
+  fake-clock regression for late aggregate results.
+- Added robots.txt policy before homepage requests. The crawler uses its product token,
+  follows bounded same-host redirects, treats only 404/410 as absent policy, denies other
+  4xx responses and fails closed on server/network errors.
+- DNS A/AAAA queries retain separate per-query bounds. Robots policy is now implemented in
+  core. The tenant-authorized synchronous crawl API now persists idempotent evidence and audit
+  outcomes under a configurable per-tenant daily cap. Dashboard controls, plan-specific quotas,
+  multi-page crawling and retention remain future work.
+- Validation: `python -m pytest -q` passed (111 tests);
+  `python -m compileall -q apps packages migrations tests` and `git diff --check` passed.
 
 ## End-of-session handoff — 2026-11-19
 

@@ -4,11 +4,13 @@ from uuid import UUID, uuid4
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     DateTime,
     Enum,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
+    Integer,
     String,
     UniqueConstraint,
     Uuid,
@@ -217,3 +219,71 @@ class WebsiteCreationRequest(Base):
         nullable=False,
         unique=True,
     )
+
+
+class CrawlRun(Base):
+    __tablename__ = "site_crawl_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('running', 'completed', 'disallowed', 'failed')",
+            name="ck_site_crawl_runs_status",
+        ),
+        CheckConstraint(
+            "bytes_read IS NULL OR bytes_read >= 0",
+            name="ck_site_crawl_runs_bytes_read",
+        ),
+        CheckConstraint(
+            "redirect_count IS NULL OR redirect_count >= 0",
+            name="ck_site_crawl_runs_redirects",
+        ),
+        ForeignKeyConstraint(
+            ["site_id", "org_id"],
+            ["sites.id", "sites.org_id"],
+            ondelete="CASCADE",
+        ),
+        Index("ix_site_crawl_runs_org_started", "org_id", "started_at"),
+        UniqueConstraint("org_id", "idem_key", name="uq_site_crawl_runs_org_idem"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(
+        "org_id",
+        Uuid,
+        ForeignKey("orgs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    website_id: Mapped[UUID] = mapped_column("site_id", Uuid, nullable=False)
+    actor_user_id: Mapped[UUID] = mapped_column(
+        "actor_usr_id",
+        Uuid,
+        ForeignKey("users.id"),
+        nullable=False,
+    )
+    request_id: Mapped[UUID] = mapped_column("req_id", Uuid, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(
+        "idem_key",
+        String(128),
+        nullable=False,
+    )
+    request_hash: Mapped[str] = mapped_column("req_hash", String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    final_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    http_status: Mapped[int | None] = mapped_column(
+        "http_status",
+        Integer,
+        nullable=True,
+    )
+    content_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    bytes_read: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    title: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    redirect_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)

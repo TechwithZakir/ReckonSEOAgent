@@ -39,7 +39,9 @@ def test_postgres_rls_isolates_organization_rows() -> None:
                             FROM pg_class AS c
                             JOIN pg_namespace AS n ON n.oid = c.relnamespace
                             WHERE n.nspname = current_schema()
-                              AND c.relname IN ('sites', 'site_create_reqs')
+                              AND c.relname IN (
+                                  'sites', 'site_create_reqs', 'site_crawl_runs'
+                              )
                             """
                         )
                     )
@@ -47,12 +49,23 @@ def test_postgres_rls_isolates_organization_rows() -> None:
                 assert guarded_tables == {
                     "sites": (True, True),
                     "site_create_reqs": (True, True),
+                    "site_crawl_runs": (True, True),
                 }
 
                 for organization_id, name in (
                     (first_id, "rls-check-a"),
                     (second_id, "rls-check-b"),
                 ):
+                    user_id = str(uuid4())
+                    connection.execute(
+                        text(
+                            """
+                            INSERT INTO users (id, created_at)
+                            VALUES (CAST(:user_id AS uuid), now())
+                            """
+                        ),
+                        {"user_id": user_id},
+                    )
                     connection.execute(
                         text("SELECT set_config('app.org_id', :org_id, true)"),
                         {"org_id": organization_id},
@@ -102,6 +115,30 @@ def test_postgres_rls_isolates_organization_rows() -> None:
                             "site_id": site_id,
                         },
                     )
+                    connection.execute(
+                        text(
+                            """
+                            INSERT INTO site_crawl_runs (
+                                id, org_id, site_id, actor_usr_id, req_id, idem_key,
+                                req_hash, status, started_at
+                            )
+                            VALUES (
+                                CAST(:run_id AS uuid), CAST(:org_id AS uuid),
+                                CAST(:site_id AS uuid), CAST(:user_id AS uuid),
+                                CAST(:request_id AS uuid), :idem_key, repeat('b', 64),
+                                'running', now()
+                            )
+                            """
+                        ),
+                        {
+                            "run_id": str(uuid4()),
+                            "org_id": organization_id,
+                            "site_id": site_id,
+                            "user_id": user_id,
+                            "request_id": str(uuid4()),
+                            "idem_key": f"crawl-{name}",
+                        },
+                    )
 
                 connection.execute(
                     text("SELECT set_config('app.org_id', :org_id, true)"),
@@ -119,6 +156,9 @@ def test_postgres_rls_isolates_organization_rows() -> None:
                 assert connection.execute(
                     text("SELECT idem_key FROM site_create_reqs")
                 ).scalars().all() == ["rls-rls-check-a"]
+                assert connection.execute(
+                    text("SELECT idem_key FROM site_crawl_runs")
+                ).scalars().all() == ["crawl-rls-check-a"]
 
                 connection.execute(
                     text("SELECT set_config('app.org_id', '', true)")
@@ -131,6 +171,9 @@ def test_postgres_rls_isolates_organization_rows() -> None:
                 ).scalar_one() == 0
                 assert connection.execute(
                     text("SELECT count(*) FROM site_create_reqs")
+                ).scalar_one() == 0
+                assert connection.execute(
+                    text("SELECT count(*) FROM site_crawl_runs")
                 ).scalar_one() == 0
             finally:
                 transaction.rollback()

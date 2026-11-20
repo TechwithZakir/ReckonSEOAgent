@@ -1,11 +1,13 @@
 import http.client
+import io
 import socket
 import ssl
-import time
 from dataclasses import dataclass
 from html.parser import HTMLParser
+from time import monotonic
 from typing import Protocol
 from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.robotparser import RobotFileParser
 
 from reckon_core.crawl_security import (
     CrawlTargetError,
@@ -24,6 +26,47 @@ _REQUEST_TIMEOUT_SECONDS = 2.0
 _MAX_RUN_SECONDS = 15.0
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 _USER_AGENT = "ReckonSEOCrawler/0.1 (+https://reckonseo.com/crawler)"
+_ROBOTS_USER_AGENT = "ReckonSEOCrawler"
+
+
+class _DeadlineSocketReader(io.RawIOBase):
+    def __init__(self, sock: socket.socket, deadline: float) -> None:
+        self._sock = sock
+        self._deadline = deadline
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: memoryview) -> int:
+        remaining = self._deadline - monotonic()
+        if remaining <= 0:
+            raise TimeoutError("The HTTP response exceeded its time limit.")
+        self._sock.settimeout(remaining)
+        data = self._sock.recv(len(buffer))
+        if monotonic() >= self._deadline:
+            raise TimeoutError("The HTTP response exceeded its time limit.")
+        if not data:
+            return 0
+        buffer[: len(data)] = data
+        return len(data)
+
+
+class _DeadlineSocket:
+    def __init__(self, sock: socket.socket, deadline: float) -> None:
+        self._sock = sock
+        self._deadline = deadline
+
+    def makefile(
+        self,
+        mode: str,
+        buffering: int | None = None,
+    ) -> io.BufferedReader:
+        if mode != "rb":
+            raise ValueError("The HTTP response requires a binary read stream.")
+        raw = _DeadlineSocketReader(self._sock, self._deadline)
+        if buffering is not None and buffering > 0:
+            return io.BufferedReader(raw, buffer_size=buffering)
+        return io.BufferedReader(raw)
 
 
 class CrawlError(RuntimeError):
@@ -31,6 +74,10 @@ class CrawlError(RuntimeError):
 
 
 class CrawlPolicyError(CrawlError):
+    pass
+
+
+class CrawlDisallowed(CrawlPolicyError):
     pass
 
 
@@ -129,6 +176,8 @@ class StdlibPinnedHttpTransport:
             connection = _PinnedHTTPConnection(host, address, timeout_seconds)
 
         request_target = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
+        deadline = monotonic() + timeout_seconds
+        response: http.client.HTTPResponse | None = None
         try:
             connection.request(
                 "GET",
@@ -141,7 +190,13 @@ class StdlibPinnedHttpTransport:
                     "User-Agent": _USER_AGENT,
                 },
             )
-            response = connection.getresponse()
+            if connection.sock is None:
+                raise CrawlUnavailable("The homepage connection was not established.")
+            response = connection.response_class(
+                _DeadlineSocket(connection.sock, deadline),
+                method="GET",
+            )
+            response.begin()
             headers = {
                 name.lower(): value
                 for name, value in response.getheaders()
@@ -167,7 +222,24 @@ class StdlibPinnedHttpTransport:
             if response.status in _REDIRECT_STATUSES:
                 body = b""
             else:
-                body = response.read(max_body_bytes + 1)
+                body_bytes = bytearray()
+                while len(body_bytes) <= max_body_bytes:
+                    remaining = deadline - monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError(
+                            "The HTTP response exceeded its time limit."
+                        )
+                    chunk = response.read1(
+                        min(64 * 1024, max_body_bytes + 1 - len(body_bytes))
+                    )
+                    if not chunk:
+                        break
+                    body_bytes.extend(chunk)
+                    if monotonic() >= deadline:
+                        raise TimeoutError(
+                            "The HTTP response exceeded its time limit."
+                        )
+                body = bytes(body_bytes)
                 if len(body) > max_body_bytes:
                     raise CrawlBodyTooLarge(
                         "The homepage exceeds the crawl size limit."
@@ -178,6 +250,8 @@ class StdlibPinnedHttpTransport:
                 body=body,
             )
         finally:
+            if response is not None:
+                response.close()
             connection.close()
 
 
@@ -261,6 +335,83 @@ def _page_title(content_type: str, body: bytes) -> str | None:
     return parser.title
 
 
+def _without_query(value: str) -> str:
+    parsed = urlsplit(value)
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+
+
+def _fetch_url(
+    url: str,
+    allowed_host: str,
+    resolver: DnsAddressLookup,
+    transport: PinnedHttpTransport,
+    deadline: float,
+) -> tuple[str, HttpFetchResponse, int]:
+    redirects = 0
+    visited: set[str] = set()
+
+    while True:
+        url, current_scheme, current_host = _validated_url(url, allowed_host)
+        if url in visited:
+            raise CrawlPolicyError("The website returned a redirect loop.")
+        visited.add(url)
+
+        if monotonic() >= deadline:
+            raise CrawlUnavailable("The homepage check exceeded its time limit.")
+        try:
+            target = resolve_public_crawl_target(current_host, resolver)
+        except DnsAddressLookupUnavailable as error:
+            raise CrawlUnavailable("Website DNS lookup is temporarily unavailable.") from error
+        except CrawlTargetError as error:
+            raise CrawlPolicyError(str(error)) from error
+
+        last_error: OSError | http.client.HTTPException | None = None
+        response: HttpFetchResponse | None = None
+        for address in target.addresses[:_MAX_ADDRESS_ATTEMPTS]:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                break
+            try:
+                response = transport.get(
+                    url=url,
+                    host=current_host,
+                    address=address,
+                    timeout_seconds=min(_REQUEST_TIMEOUT_SECONDS, remaining),
+                    max_body_bytes=_MAX_BODY_BYTES,
+                )
+                if monotonic() >= deadline:
+                    raise CrawlUnavailable(
+                        "The homepage check exceeded its time limit."
+                    )
+                break
+            except (OSError, http.client.HTTPException) as error:
+                last_error = error
+
+        if response is None:
+            if monotonic() >= deadline:
+                raise CrawlUnavailable(
+                    "The homepage check exceeded its time limit."
+                ) from last_error
+            raise CrawlUnavailable(
+                "The website could not be reached at its public DNS addresses."
+            ) from last_error
+
+        if response.status_code not in _REDIRECT_STATUSES:
+            return url, response, redirects
+
+        location = response.headers.get("location")
+        if not location or len(location) > _MAX_URL_LENGTH:
+            raise CrawlPolicyError("The website returned an invalid redirect.")
+        if redirects >= _MAX_REDIRECTS:
+            raise CrawlPolicyError("The website exceeded the redirect limit.")
+        next_url = urljoin(url, location)
+        next_url, next_scheme, _ = _validated_url(next_url, allowed_host)
+        if current_scheme == "https" and next_scheme != "https":
+            raise CrawlPolicyError("HTTPS redirects cannot downgrade to HTTP.")
+        url = next_url
+        redirects += 1
+
+
 class HomepageCrawler:
     def __init__(
         self,
@@ -274,73 +425,49 @@ class HomepageCrawler:
         if scheme not in {"http", "https"}:
             raise CrawlPolicyError("Only public HTTP(S) websites can be crawled.")
 
-        url = f"{scheme}://{host}/"
-        redirects = 0
-        visited: set[str] = set()
-        deadline = time.monotonic() + _MAX_RUN_SECONDS
+        homepage_url = f"{scheme}://{host}/"
+        deadline = monotonic() + _MAX_RUN_SECONDS
 
-        while True:
-            url, current_scheme, current_host = _validated_url(url, host)
-            if url in visited:
-                raise CrawlPolicyError("The website returned a redirect loop.")
-            visited.add(url)
-
-            if time.monotonic() >= deadline:
-                raise CrawlUnavailable("The homepage check exceeded its time limit.")
-            try:
-                target = resolve_public_crawl_target(current_host, self._resolver)
-            except DnsAddressLookupUnavailable as error:
-                raise CrawlUnavailable("Website DNS lookup is temporarily unavailable.") from error
-            except CrawlTargetError as error:
-                raise CrawlPolicyError(str(error)) from error
-
-            last_error: OSError | http.client.HTTPException | None = None
-            response: HttpFetchResponse | None = None
-            for address in target.addresses[:_MAX_ADDRESS_ATTEMPTS]:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                try:
-                    response = self._transport.get(
-                        url=url,
-                        host=current_host,
-                        address=address,
-                        timeout_seconds=min(_REQUEST_TIMEOUT_SECONDS, remaining),
-                        max_body_bytes=_MAX_BODY_BYTES,
-                    )
-                    break
-                except (OSError, http.client.HTTPException) as error:
-                    last_error = error
-
-            if response is None:
-                if time.monotonic() >= deadline:
-                    raise CrawlUnavailable(
-                        "The homepage check exceeded its time limit."
-                    ) from last_error
-                raise CrawlUnavailable(
-                    "The website could not be reached at its public DNS addresses."
-                ) from last_error
-
-            if response.status_code in _REDIRECT_STATUSES:
-                location = response.headers.get("location")
-                if not location or len(location) > _MAX_URL_LENGTH:
-                    raise CrawlPolicyError("The website returned an invalid redirect.")
-                if redirects >= _MAX_REDIRECTS:
-                    raise CrawlPolicyError("The website exceeded the redirect limit.")
-                next_url = urljoin(url, location)
-                next_url, next_scheme, _ = _validated_url(next_url, host)
-                if current_scheme == "https" and next_scheme != "https":
-                    raise CrawlPolicyError("HTTPS redirects cannot downgrade to HTTP.")
-                url = next_url
-                redirects += 1
-                continue
-
-            content_type = response.headers.get("content-type", "")
-            return CrawlResult(
-                final_url=url,
-                status_code=response.status_code,
-                content_type=content_type,
-                bytes_read=len(response.body),
-                title=_page_title(content_type, response.body),
-                redirect_count=redirects,
+        robots_url = f"{scheme}://{host}/robots.txt"
+        _, robots_response, _ = _fetch_url(
+            robots_url,
+            host,
+            self._resolver,
+            self._transport,
+            deadline,
+        )
+        if (
+            200 <= robots_response.status_code < 300
+            and robots_response.status_code != 206
+        ):
+            parser = RobotFileParser()
+            parser.parse(
+                robots_response.body.decode("utf-8", errors="replace").splitlines()
             )
+            if not parser.can_fetch(_ROBOTS_USER_AGENT, homepage_url):
+                raise CrawlDisallowed("robots.txt disallows crawling this homepage.")
+        elif robots_response.status_code not in {404, 410}:
+            if 400 <= robots_response.status_code < 500:
+                raise CrawlDisallowed(
+                    "robots.txt could not be accessed; crawling is denied."
+                )
+            raise CrawlUnavailable(
+                "robots.txt could not be checked; crawling is unavailable."
+            )
+
+        final_url, homepage_response, redirects = _fetch_url(
+            homepage_url,
+            host,
+            self._resolver,
+            self._transport,
+            deadline,
+        )
+        content_type = homepage_response.headers.get("content-type", "")
+        return CrawlResult(
+            final_url=_without_query(final_url),
+            status_code=homepage_response.status_code,
+            content_type=content_type,
+            bytes_read=len(homepage_response.body),
+            title=_page_title(content_type, homepage_response.body),
+            redirect_count=redirects,
+        )

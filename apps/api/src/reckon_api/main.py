@@ -4,6 +4,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+from reckon_api.routers.crawls import router as crawls_router
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import Response
@@ -16,6 +17,7 @@ from reckon_api.config import Settings
 from reckon_api.routers.health import router as health_router
 from reckon_api.routers.organizations import router as organizations_router
 from reckon_api.routers.websites import router as websites_router
+from reckon_core.crawler import HomepageCrawler
 from reckon_core.oidc import OidcTokenVerifier
 
 
@@ -59,6 +61,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = app_settings
     app.state.session_factory = session_factory
     app.state.token_verifier = token_verifier
+    app.state.homepage_crawler = HomepageCrawler()
 
     @app.middleware("http")
     async def attach_request_id(
@@ -94,6 +97,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health_router)
     app.include_router(organizations_router)
     app.include_router(websites_router)
+    app.include_router(crawls_router)
     return app
 
 

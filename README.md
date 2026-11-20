@@ -90,6 +90,17 @@ Production settings reject missing database or partial OIDC configuration.
   website-origin registration and DNS TXT challenge creation.
 - `POST /api/v1/organizations/{organization_id}/websites/{website_id}/verify`: owner/admin-only
   exact TXT verification; returns verified only after DNS confirms the challenge.
+- `POST /api/v1/organizations/{organization_id}/websites/{website_id}/crawl`: active-member
+  crawl of a verified site; requires `Idempotency-Key`, records an audit/evidence row, and
+  reserves the organization's daily crawl budget before network access. The default limit is
+  10 attempts per UTC day per organization, including failures and interrupted runs.
+- `GET /api/v1/organizations/{organization_id}/websites/{website_id}/crawls`: lists the
+  authenticated member's crawl history for that website, newest first; supports `limit`
+  (default 20, maximum 100) and `offset` pagination.
+
+Set `RECKON_CRAWL_DAILY_LIMIT` to a positive integer to change the per-organization default
+budget. Replaying a completed or robots-disallowed request with the same key returns its
+stored result without consuming another crawl.
 
 ### Controlled identity provisioning
 
@@ -136,10 +147,13 @@ only; it does not fetch or crawl the website.
 
 The shared core has a bounded A/AAAA resolver, rejects non-public DNS answers, and includes
 a bounded homepage fetcher that connects to the validated IP, validates same-host redirects,
-limits response bytes, and applies socket-operation timeouts. It is not exposed through the
-API or dashboard; there is no crawl history, tenant metering, or robots.txt handling yet.
-Aggregate timeout behavior still needs transport-level verification. No live external fetch
-was performed.
+limits response bytes, and applies a monotonic request deadline across response headers and
+body reads. Results arriving after the aggregate crawl deadline are rejected. DNS A/AAAA
+lookups have separate per-query bounds. Before fetching the homepage, the crawler retrieves
+and enforces `robots.txt`; only 404/410 are treated as an absent policy, other 4xx responses
+deny crawling, and server errors fail closed. The crawler is not exposed through the
+dashboard. The API provides a verified-site crawl route with tenant-scoped daily reservations,
+idempotency, persisted results and audit events. No live external fetch was performed.
 
 ## Dashboard preview
 

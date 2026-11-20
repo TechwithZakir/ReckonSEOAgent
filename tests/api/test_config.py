@@ -30,3 +30,8 @@ def test_production_settings_accept_complete_integration_configuration() -> None
 
     assert settings.environment == "production"
     assert settings.database_url is not None
+
+
+def test_crawl_daily_limit_must_be_positive() -> None:
+    with pytest.raises(ValidationError, match="crawl_daily_limit"):
+        Settings(_env_file=None, environment="test", crawl_daily_limit=0)
