@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react'
-import type { User } from 'oidc-client-ts'
 import type { OidcConfigResult } from './oidc'
+import type { NativeSession } from '../lib/native-auth'
 
 export type AuthStatus =
   | 'initializing'
@@ -12,9 +12,11 @@ export type AuthStatus =
 export type AuthContextValue = {
   config: OidcConfigResult
   status: AuthStatus
-  user: User | null
+  user: { access_token: string; profile: { sub: string; iss?: string } } | null
+  sessionId: string | null
   error: string | null
   signIn: () => Promise<void>
+  acceptNativeSession: (session: NativeSession) => void
   signOut: () => Promise<void>
 }
 

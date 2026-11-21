@@ -21,6 +21,206 @@ milestone details here.
 
 ## Implemented
 
+### Specialist-agent composition foundation
+
+- Added a typed, read-only technical audit prioritizer composition. It loads the technical
+  audit, prioritization, prompt-injection and tenant-isolation skills from an allowlist,
+  includes only deterministic finding metadata in model input, and accepts only a complete
+  permutation of the supplied finding codes. It grants no tools.
+- This is not yet a runnable agent or API. A future integration must load authorized
+  tenant/website evidence, bind task-specific model/budget policy, execute through the
+  gateway, retain run attribution and verify skill availability in packaged deployments.
+
+### AI provider test
+
+- Added a manager-only, metered **Test AI** action with OpenAI Responses and Anthropic
+  Messages adapters. It sends a fixed prompt to the saved endpoint, pins validated public
+  DNS addresses, disables redirects, bounds response size and returns usage only after a
+  valid provider response. Custom endpoints receive the key and prompt.
+- The default organization budget is 10,000 tokens per day; each test reserves 640 tokens
+  before dispatch. Unknown outcomes remain reserved across days without automatic retry or
+  an operator reconciliation workflow. Concurrency limits are per API process.
+- Provider tests use mocked responses only. Actual provider connectivity remains unverified
+  until an authorized user deliberately runs a test.
+
+### AI provider endpoints
+
+- Added editable, organization-scoped API base URLs with official OpenAI and Anthropic
+  defaults, public-hostname/HTTPS syntax checks and the existing encrypted key handling.
+  One provider remains active at a time. Saving does not validate or contact the endpoint.
+- Applied migration `0016_model_endpoint` and restarted the API with operator approval.
+  Targeted validation passed: 20 backend tests, including PostgreSQL tenant isolation, and
+  57 dashboard tests, plus dashboard lint/build and a live API fixture. No provider was
+  contacted at that stage.
+
+### Organization creation foreign-key fix
+
+- Organization creation now flushes the organization before its membership, idempotency
+  record and audit event, while keeping all writes in one transaction. Added API coverage
+  with SQLite foreign keys enabled and a non-bypass PostgreSQL test for creation, replay,
+  tenant-scoped records and rollback.
+
+### Phase 21: organization management
+
+- Added owner/admin review and approval flows for role changes and email invitations,
+  including last-owner protection, idempotency, membership-version checks and audit events.
+  Invitations are discoverable only by a matching verified native email; OIDC-only accounts
+  and the locally bootstrapped unverified administrator cannot accept them.
+- Added dashboard management controls and an invitations page. SMTP is required for new
+  invitations; SMTP acceptance is not delivery verification, and uncertain sends are not
+  automatically retried.
+- Applied migration `0015_org_management` and restarted the local API with operator approval.
+  PostgreSQL tests cover recipient isolation, stale manager authorization, concurrent approval
+  and acceptance, and the last-owner race. No real mail was sent. SMTP remains unconfigured,
+  so new invitations cannot yet be approved locally.
+- Validation: 203 backend and 56 dashboard tests passed; dashboard lint/build and API
+  liveness/readiness passed. The invitations and login navigation were checked in a browser.
+  Invitation discovery currently shows at most 50 pending invitations, ordered by expiry.
+
+### Phase 20: organization member roster
+
+- Added a paginated active-member roster for owners and admins, with tenant-scoped membership
+  checks, manager revalidation and non-cacheable responses. Native account emails are shown;
+  external identity emails are not stored. PostgreSQL RLS and API tests cover isolation and
+  unauthorized roles.
+- Added a member view to connected workspaces. At that phase invitations, role changes and
+  last-owner protections remained unimplemented.
+- Restarted the local API with user approval and verified the roster with isolated browser
+  fixtures. Validation: 193 backend tests and 51 dashboard tests passed; dashboard
+  lint/build and Python compilation passed.
+
+### Phase 19: password recovery
+
+- Added rate-limited email recovery with hashed, 30-minute single-use links and generic
+  responses. Resetting a password invalidates other recovery links and revokes existing native
+  sessions. PostgreSQL account locks serialize concurrent sign-in and password reset.
+- Added **Forgot password** and reset screens on `/login`. Applied migration
+  `0014_password_reset` and restarted the local API with user approval. SMTP is still
+  unconfigured, so recovery and public signup remain unavailable; no real email was sent.
+- Tested fixture recovery, replay, expiry, email failure, session revocation and concurrent
+  PostgreSQL sign-in/reset. Member invitations and role management are still future stages.
+- Validation: 191 backend and 50 dashboard tests passed. Dashboard lint/build, Python
+  compilation, changed-file Pylance diagnostics, and browser navigation/recovery fixtures
+  passed.
+
+### Phase 18: local administrator and login navigation
+
+- Added a singleton initial platform-administrator role and a local-only interactive bootstrap
+  command. Passwords are prompted privately and hashed; existing accounts are not promoted,
+  and bootstrap cannot replace an existing administrator. The role does not bypass tenant
+  membership checks and currently has no platform-management operations.
+- Added a dedicated `/login` page with browser back/forward navigation and a visible dashboard
+  sign-in button. Native and OIDC sign-in paths remain available when configured.
+- Applied migration `0013_platform_admin`, enabled local native sign-in and restarted the API
+  with user approval. The operator initialized the administrator using the private prompt.
+  Public registration still needs SMTP; administrator management is not yet implemented.
+
+### Phase 17: native account foundation
+
+- Added optional email-first signup, Argon2id password verification, single-use verification
+  tokens, one-hour revocable bearer sessions and persistent request limits. Verification
+  links carry their token in a fragment, the dashboard clears it, and sensitive validation
+  errors and account responses are not cached or reflected.
+- Added dashboard signup, verification, sign-in and sign-out while retaining OIDC. Browser
+  tokens remain in memory. An isolated browser fixture exercises the complete UI flow; no
+  real email or provider was contacted.
+- Applied migration `0012_native_auth` and restarted the local API with user approval.
+  SMTP and native accounts remain disabled, so the forms are visible but unavailable.
+  Password recovery, MFA, member invitations, account management, operational abuse controls
+  and production hardening remain future work; do not treat this as production-ready.
+- Validation: 183 backend tests and 49 dashboard tests passed, including fixture-based
+  PostgreSQL signup and concurrent rate limiting under the non-bypass application role.
+  Mocked SMTP and browser authentication, dashboard lint/build, Python compilation and
+  changed-file Pylance diagnostics passed. No real email was sent.
+
+### Phase 16: organization discovery and switching
+
+- Added authenticated, cursor-paginated organization discovery with a read-only RLS policy
+  restricted to the current user's active memberships. Organization details are individually
+  tenant-scoped and membership is rechecked when switching.
+- The workspace UI lists organizations, supports pagination, creation and verified switching,
+  and retains the existing connect-by-ID option. Applied local migration
+  `0011_membership_discovery`; PostgreSQL tests exercise isolation using a non-bypass role.
+- At this phase native signup/sign-in and SMTP were not yet implemented; member invitations,
+  role management, organization profile editing and account controls remain future phases.
+- Validation: 176 backend tests and 45 dashboard tests passed; dashboard lint/build and Python
+  compilation passed. The switcher was browser-tested with isolated fixture data.
+- With user approval, restarted the local API and verified the organization routes and API
+  and dashboard-proxy readiness. Real sign-in remains unconfigured.
+
+### Phase 15: organization AI settings
+
+- Added owner/admin-only provider and model settings, encrypted per-organization API-key
+  storage, removal, no-store responses, credential-safe validation errors and audit events.
+  PostgreSQL RLS and locked membership checks protect tenant-scoped writes. Model and key
+  validity are not checked with providers, and stored settings are not connected to an adapter.
+- Added the dashboard System settings entry and an AI model form. The encryption key must be
+  configured server-side, OIDC membership is required, and no secret is returned by the API.
+  Staging/production writes require HTTPS; key rotation and recovery remain unimplemented.
+- Applied the additive local `0010_org_model_settings` migration. No real provider credentials
+  or network requests were used.
+- Validation: 174 backend tests and 43 dashboard tests passed; dashboard lint/build and Python
+  compilation passed. The unsigned-in settings navigation was checked on desktop and mobile.
+- With user approval, configured a local encryption key and restarted the local API; API and
+  dashboard-proxy readiness returned HTTP 200. Real OIDC sign-in remains unconfigured.
+
+### Phase 14: internal model gateway boundary
+
+- Added typed gateway contracts and injected trusted policy and adapter interfaces. Membership
+  and role are checked, a request-bound reservation is committed before dispatch, and replay
+  cannot dispatch again. Reported usage is committed before returning; provider overages remain
+  recorded and raise an error. A deadline reached before dispatch settles zero usage.
+- Unknown provider outcomes and caller cancellation keep reservations charged; recognized
+  outcomes record tenant-scoped audit details when possible. A per-instance semaphore remains
+  occupied until the adapter task finishes, including when it ignores cancellation.
+- Only fake adapters and authorizers exist; no real provider call was made. Provider reports
+  are trusted rather than independently verified, synchronous work can exceed the async
+  timeout, and there is no distributed concurrency limit or operator reconciliation. Real
+  task policy, provider integration, production metering and agent runtime remain future work.
+- Validation: 167 backend tests passed, including live PostgreSQL RLS and gateway checks;
+  Python compilation and `git diff --check` passed.
+
+### Phase 13: model token reservation foundation
+
+- Added typed model reservation and usage-report contracts and a tenant-scoped PostgreSQL
+  ledger with forced RLS, idempotency binding, organization-level reservation locking and
+  transactionally recorded audit events. Unresolved reservations remain charged across UTC
+  days; settled usage above the reservation is retained and can block future reservations.
+- Applied the additive local `0009_model_usage` migration. Concurrent-budget and RLS tests use
+  the least-privileged local PostgreSQL role and clean up their test records.
+- At this phase no model gateway, provider calls, provider-report verification, public usage
+  endpoint or reconciliation workflow was added. The ledger alone is not a complete enforcement
+  boundary; integrations must commit before calls, enforce provider limits and reject replays.
+
+### Phase 12: website and crawl-results view
+
+- Expanded the connected website workspace and added a latest-crawl summary with reported
+  finding impacts, sitemap document count and homepage response. The latest run opens by
+  default; earlier runs remain expandable, and findings show their source and impact.
+- Kept unavailable evidence separate from zero reported findings, retained sitemap
+  truncation and membership details, and avoided showing an empty website list after a
+  loading error. The dashboard still requires a provisioned OIDC identity and verified
+  website for real crawl data.
+
+### Phase 11: visible operations overview
+
+- Added dashboard cards for account access, website evidence and live platform health,
+  including setup and website navigation actions. The overview remains useful before
+  authentication without showing invented SEO results.
+- Preserved verified-site crawl and tenant authorization requirements; site details and
+  usage still require a connected organization.
+
+### Phase 10: local readiness and crawl budget visibility
+
+- Restarted the local API with its configured project environment after the existing process
+  reported no database configuration. Direct PostgreSQL access and API readiness succeeded;
+  no production deployment or real OIDC account connection was performed.
+- Added a non-cacheable organization crawl-usage endpoint and a dashboard snapshot for active
+  members. The snapshot uses the same UTC window and tenant-scoped reservation count as
+  enforcement, counts failed attempts, and is not an allowance guarantee under concurrency.
+- Real browser sign-in remains dependent on an externally configured OIDC provider and
+  operator-provisioned identity. Other usage categories and agent metering remain future work.
+
 ### Foundation: API bootstrap
 
 - Added the FastAPI package, settings loaded from `RECKON_` environment values and a typed
@@ -171,12 +371,42 @@ milestone details here.
 - Crawl outcomes and lifecycle audit events are tenant-scoped. Robots-denied runs are recorded
   distinctly; policy failures return 422 and network failures return 503 without claiming a
   successful crawl.
+- HTML crawl results now capture bounded title and meta-description text plus an H1 count using
+  the deterministic parser. These observations are persisted and returned as crawl evidence;
+  non-HTML responses omit page metadata.
+- Added the deterministic `homepage-v2` audit for non-success HTTP status, missing title/meta
+  description/H1, noindex directives, and invalid, duplicate or cross-host canonical links.
+  X-Robots-Tag and robots meta signals are recorded independently; canonical query strings are
+  stripped. Findings include URL, direct evidence, impact, confidence, effort, recommendation
+  and verification; no score or complete indexability verdict is computed. Findings and rule
+  version are persisted with crawl runs and returned consistently in history.
+- Crawl results retain robots.txt status and up to ten normalized, query-redacted sitemap URLs
+  declared for the verified host. Discovery examines at most 100 declarations; invalid or
+  external examined entries are counted as rejected, and truncation is explicit. Sitemap
+  documents are then fetched within a four-second aggregate budget and 256 KiB per-document
+  limit. The parser rejects DTD/entity declarations, obeys robots rules, and stores counts of
+  unique same-host URLs or sitemap-index children. It retains capped child references and may
+  fetch one child level under the same ten-document/four-second budget; it never fetches page URLs.
+- Added the deterministic `homepage-v3` sitemap audit. It reports empty parsed documents and
+  incomplete sitemap analysis when fetches fail, entries are rejected, or bounded parsing/fetch
+  limits prevent complete inspection; it does not infer a sitewide indexability score.
+- Added `homepage-v4` URL-set membership evidence for the crawled homepage and same-host
+  canonical. Absence findings are emitted only when all discovered sitemap documents and child
+  references were completely analyzed; unknown or incomplete coverage remains explicit.
+- A later crawl reservation now reconciles runs still marked `running` after five minutes as
+  `worker_interrupted`, timestamps and audits the recovery, and preserves their daily budget
+  charge. Recent in-progress idempotent retries remain conflicts; crawl history exposes stored
+  error codes.
 - Added an active-member crawl-history endpoint scoped to one website, with stable newest-first
   ordering, bounded limit/offset pagination and tenant-context RLS.
-- Applied migration `0003_site_crawl_runs` to local PostgreSQL 18.7 and extended the live RLS
-  integration test. The API uses an injected crawler in tests; no live external site was fetched.
-- The dashboard remains read-only for crawling. Multi-page crawl, plan-specific quotas,
-  retention/cleanup, and background execution remain unimplemented.
+- Applied migrations through `0008_sitemap_document_evidence` to local PostgreSQL 18.7 and extended
+  live RLS/concurrency integration tests. The API uses an injected crawler in tests; no live
+  external site was fetched.
+- Added the dashboard's first crawl workflow: active members can start a crawl for verified
+  websites, inspect persisted findings and sitemap evidence, and refresh recent history.
+  Crawl responses must validate before the UI reports completion; ambiguous retries reuse
+  their idempotency key. Multi-page crawl, plan-specific quotas, retention/cleanup, and
+  background execution remain unimplemented.
 
 ## Explicitly not implemented yet
 
@@ -189,7 +419,8 @@ milestone details here.
   retention/cleanup remain unimplemented.
 - No fine-grained permission policy, complete audit event history, Redis/Celery jobs,
   broader usage metering, MCP endpoint or CMS writes.
-- The dashboard is not yet an SEO operations interface and displays no crawl metrics.
+- The dashboard supports onboarding and a narrow crawl/history workflow; broader technical
+  audit controls, multi-page workflows and agent-run operations remain unimplemented.
 - The database role used by deployment must not be a superuser or have `BYPASSRLS`.
 
 ## Decisions and boundaries

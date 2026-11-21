@@ -1,11 +1,13 @@
 import http.client
+import ipaddress
 import io
 import socket
 import ssl
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from time import monotonic
-from typing import Protocol
+from typing import Literal, Protocol
 from urllib.parse import urljoin, urlsplit, urlunsplit
 from urllib.robotparser import RobotFileParser
 
@@ -21,6 +23,14 @@ from reckon_core.crawl_security import (
 _MAX_URL_LENGTH = 2048
 _MAX_REDIRECTS = 2
 _MAX_BODY_BYTES = 512 * 1024
+_MAX_META_DESCRIPTION_LENGTH = 1000
+_MAX_SITEMAP_DECLARATIONS = 100
+_MAX_SITEMAP_URLS = 10
+_MAX_SITEMAP_BODY_BYTES = 256 * 1024
+_MAX_SITEMAP_ENTRIES = 10_000
+_MAX_SITEMAP_CHILD_URLS = 10
+_MAX_SITEMAP_DOCUMENTS = 10
+_MAX_SITEMAP_SECONDS = 4.0
 _MAX_ADDRESS_ATTEMPTS = 2
 _REQUEST_TIMEOUT_SECONDS = 2.0
 _MAX_RUN_SECONDS = 15.0
@@ -96,6 +106,35 @@ class HttpFetchResponse:
     body: bytes
 
 
+SitemapFetchStatus = Literal[
+    "fetched",
+    "http_error",
+    "robots_disallowed",
+    "fetch_unavailable",
+    "fetch_rejected",
+    "unsupported_content_type",
+    "invalid_xml",
+    "deadline_exceeded",
+    "fetch_limit_reached",
+]
+SitemapDocumentType = Literal["urlset", "sitemapindex"]
+
+
+@dataclass(frozen=True, slots=True)
+class SitemapEvidence:
+    url: str
+    status: SitemapFetchStatus
+    http_status_code: int | None = None
+    document_type: SitemapDocumentType | None = None
+    url_count: int | None = None
+    homepage_listed: bool | None = None
+    canonical_url_listed: bool | None = None
+    child_sitemap_count: int | None = None
+    child_sitemap_urls: tuple[str, ...] = ()
+    rejected_count: int | None = None
+    truncated: bool = False
+
+
 class PinnedHttpTransport(Protocol):
     def get(
         self,
@@ -116,6 +155,18 @@ class CrawlResult:
     bytes_read: int
     title: str | None
     redirect_count: int
+    meta_description: str | None = None
+    h1_count: int | None = None
+    meta_robots_noindex: bool | None = None
+    x_robots_noindex: bool | None = None
+    canonical_url: str | None = None
+    canonical_link_count: int | None = None
+    robots_status_code: int | None = None
+    sitemap_urls: tuple[str, ...] | None = None
+    sitemap_declaration_count: int | None = None
+    sitemap_rejected_count: int | None = None
+    sitemap_discovery_truncated: bool | None = None
+    sitemap_evidence: tuple[SitemapEvidence, ...] | None = None
 
 
 class _PinnedHTTPConnection(http.client.HTTPConnection):
@@ -197,10 +248,13 @@ class StdlibPinnedHttpTransport:
                 method="GET",
             )
             response.begin()
-            headers = {
-                name.lower(): value
-                for name, value in response.getheaders()
-            }
+            headers: dict[str, str] = {}
+            for name, value in response.getheaders():
+                normalized_name = name.lower()
+                if normalized_name == "x-robots-tag" and normalized_name in headers:
+                    headers[normalized_name] += f", {value}"
+                else:
+                    headers[normalized_name] = value
             if headers.get("content-encoding", "identity").lower() != "identity":
                 raise CrawlPolicyError("Compressed crawl responses are not accepted.")
 
@@ -255,31 +309,101 @@ class StdlibPinnedHttpTransport:
             connection.close()
 
 
-class _TitleParser(HTMLParser):
+@dataclass(frozen=True, slots=True)
+class _PageMetadata:
+    title: str | None
+    description: str | None
+    h1_count: int
+    robots_noindex: bool | None
+    canonical_url: str | None
+    canonical_link_count: int
+
+
+class _PageMetadataParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self._in_title = False
-        self._parts: list[str] = []
-        self._length = 0
+        self._title_parts: list[str] = []
+        self._title_length = 0
+        self._description: str | None = None
+        self._h1_count = 0
+        self._robots_meta_seen = False
+        self._robots_noindex = False
+        self._canonical_href: str | None = None
+        self._canonical_link_count = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag.lower() == "title":
+        normalized_tag = tag.lower()
+        attributes = {
+            name.lower(): value
+            for name, value in attrs
+            if value is not None
+        }
+        if normalized_tag == "title":
             self._in_title = True
+        elif normalized_tag == "h1":
+            self._h1_count += 1
+        elif normalized_tag == "meta" and self._description is None:
+            if attributes.get("name", "").casefold() == "description":
+                description = " ".join(
+                    attributes.get("content", "").split()
+                )[:_MAX_META_DESCRIPTION_LENGTH]
+                self._description = description or None
+        if normalized_tag == "meta":
+            name = attributes.get("name", "").casefold()
+            if name in {"robots", "googlebot"}:
+                self._robots_meta_seen = True
+                if _has_noindex(attributes.get("content", "")):
+                    self._robots_noindex = True
+        elif normalized_tag == "link":
+            rel_values = attributes.get("rel", "").casefold().split()
+            if "canonical" in rel_values:
+                self._canonical_link_count += 1
+                if self._canonical_link_count == 1:
+                    self._canonical_href = attributes.get("href")
 
     def handle_endtag(self, tag: str) -> None:
         if tag.lower() == "title":
             self._in_title = False
 
     def handle_data(self, data: str) -> None:
-        if self._in_title and self._length < 300:
-            part = data[: 300 - self._length]
-            self._parts.append(part)
-            self._length += len(part)
+        if self._in_title and self._title_length < 300:
+            part = data[: 300 - self._title_length]
+            self._title_parts.append(part)
+            self._title_length += len(part)
 
     @property
     def title(self) -> str | None:
-        value = " ".join(" ".join(self._parts).split())[:300]
+        value = " ".join(" ".join(self._title_parts).split())[:300]
         return value or None
+
+    @property
+    def description(self) -> str | None:
+        return self._description
+
+    @property
+    def h1_count(self) -> int:
+        return self._h1_count
+
+    @property
+    def robots_noindex(self) -> bool | None:
+        return self._robots_noindex if self._robots_meta_seen else None
+
+    @property
+    def canonical_href(self) -> str | None:
+        return self._canonical_href
+
+    @property
+    def canonical_link_count(self) -> int:
+        return self._canonical_link_count
+
+
+def _has_noindex(value: str) -> bool:
+    directives = (
+        directive.split(":", 1)[-1]
+        for directive in value.casefold().replace(",", " ").split()
+    )
+    return any(directive in {"noindex", "none"} for directive in directives)
 
 
 def _validated_url(value: str, allowed_host: str) -> tuple[str, str, str]:
@@ -325,14 +449,112 @@ def _validated_url(value: str, allowed_host: str) -> tuple[str, str, str]:
     return url, scheme, canonical_host
 
 
-def _page_title(content_type: str, body: bytes) -> str | None:
+def _normalized_canonical_url(base_url: str, href: str | None) -> str | None:
+    if (
+        not href
+        or len(href) > _MAX_URL_LENGTH
+        or href != href.strip()
+        or "\\" in href
+        or any(ord(char) < 32 for char in href)
+    ):
+        return None
+
+    candidate = urljoin(base_url, href)
+    if len(candidate) > _MAX_URL_LENGTH:
+        return None
+    try:
+        parsed = urlsplit(candidate)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+        or "\\" in candidate
+        or any(ord(char) < 32 for char in candidate)
+    ):
+        return None
+
+    try:
+        address = ipaddress.ip_address(hostname)
+        canonical_host = address.compressed.lower()
+        if address.version == 6:
+            canonical_host = f"[{canonical_host}]"
+    except ValueError:
+        try:
+            canonical_host = hostname.encode("idna").decode("ascii").lower()
+        except UnicodeError:
+            return None
+
+    scheme = parsed.scheme.lower()
+    if port not in {None, 80 if scheme == "http" else 443}:
+        canonical_host = f"{canonical_host}:{port}"
+    return urlunsplit((scheme, canonical_host, parsed.path or "/", "", ""))
+
+
+def _discover_sitemaps(
+    robots_parser: RobotFileParser,
+    robots_url: str,
+    allowed_host: str,
+) -> tuple[tuple[str, ...], int, int, bool]:
+    declarations = robots_parser.site_maps() or []
+    sitemap_urls: list[str] = []
+    seen_urls: set[str] = set()
+    rejected_count = 0
+    truncated = len(declarations) > _MAX_SITEMAP_DECLARATIONS
+
+    for declaration in declarations[:_MAX_SITEMAP_DECLARATIONS]:
+        normalized = _normalized_canonical_url(robots_url, declaration)
+        if normalized is None:
+            rejected_count += 1
+            continue
+        try:
+            normalized, sitemap_scheme, _ = _validated_url(normalized, allowed_host)
+        except CrawlPolicyError:
+            rejected_count += 1
+            continue
+        if (
+            urlsplit(robots_url).scheme.lower() == "https"
+            and sitemap_scheme != "https"
+        ):
+            rejected_count += 1
+            continue
+        if normalized in seen_urls:
+            continue
+        seen_urls.add(normalized)
+        if len(sitemap_urls) == _MAX_SITEMAP_URLS:
+            truncated = True
+            continue
+        sitemap_urls.append(normalized)
+
+    return tuple(sitemap_urls), len(declarations), rejected_count, truncated
+
+
+def _page_metadata(
+    content_type: str,
+    body: bytes,
+    page_url: str,
+) -> _PageMetadata | None:
     media_type = content_type.split(";", 1)[0].strip().lower()
     if media_type not in {"text/html", "application/xhtml+xml"}:
         return None
-    parser = _TitleParser()
+    parser = _PageMetadataParser()
     parser.feed(body.decode("utf-8", errors="replace"))
     parser.close()
-    return parser.title
+    return _PageMetadata(
+        title=parser.title,
+        description=parser.description,
+        h1_count=parser.h1_count,
+        robots_noindex=parser.robots_noindex,
+        canonical_url=_normalized_canonical_url(
+            page_url,
+            parser.canonical_href,
+        ),
+        canonical_link_count=parser.canonical_link_count,
+    )
 
 
 def _without_query(value: str) -> str:
@@ -346,6 +568,8 @@ def _fetch_url(
     resolver: DnsAddressLookup,
     transport: PinnedHttpTransport,
     deadline: float,
+    max_body_bytes: int = _MAX_BODY_BYTES,
+    robots_parser: RobotFileParser | None = None,
 ) -> tuple[str, HttpFetchResponse, int]:
     redirects = 0
     visited: set[str] = set()
@@ -355,6 +579,11 @@ def _fetch_url(
         if url in visited:
             raise CrawlPolicyError("The website returned a redirect loop.")
         visited.add(url)
+        if robots_parser is not None and not robots_parser.can_fetch(
+            _ROBOTS_USER_AGENT,
+            url,
+        ):
+            raise CrawlDisallowed("robots.txt disallows this crawl URL.")
 
         if monotonic() >= deadline:
             raise CrawlUnavailable("The homepage check exceeded its time limit.")
@@ -377,11 +606,15 @@ def _fetch_url(
                     host=current_host,
                     address=address,
                     timeout_seconds=min(_REQUEST_TIMEOUT_SECONDS, remaining),
-                    max_body_bytes=_MAX_BODY_BYTES,
+                    max_body_bytes=max_body_bytes,
                 )
                 if monotonic() >= deadline:
                     raise CrawlUnavailable(
                         "The homepage check exceeded its time limit."
+                    )
+                if len(response.body) > max_body_bytes:
+                    raise CrawlBodyTooLarge(
+                        "The website response exceeds the crawl size limit."
                     )
                 break
             except (OSError, http.client.HTTPException) as error:
@@ -412,6 +645,255 @@ def _fetch_url(
         redirects += 1
 
 
+def _xml_local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1].lower()
+
+
+def _normalized_sitemap_location(
+    value: str,
+    base_url: str,
+    allowed_host: str,
+) -> str | None:
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return None
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        return None
+
+    normalized = _normalized_canonical_url(base_url, value)
+    if normalized is None:
+        return None
+    try:
+        normalized, location_scheme, _ = _validated_url(normalized, allowed_host)
+    except CrawlPolicyError:
+        return None
+    if (
+        urlsplit(base_url).scheme.lower() == "https"
+        and location_scheme != "https"
+    ):
+        return None
+    return normalized
+
+
+def _parse_sitemap_document(
+    sitemap_url: str,
+    response: HttpFetchResponse,
+    allowed_host: str,
+    homepage_url: str,
+    canonical_url: str | None,
+    base_url: str | None = None,
+) -> SitemapEvidence:
+    media_type = (
+        response.headers.get("content-type", "")
+        .split(";", 1)[0]
+        .strip()
+        .lower()
+    )
+    if not (
+        media_type in {"application/xml", "text/xml"}
+        or media_type.endswith("+xml")
+    ):
+        return SitemapEvidence(
+            url=sitemap_url,
+            status="unsupported_content_type",
+            http_status_code=response.status_code,
+        )
+
+    lowered_body = response.body.lower()
+    if b"<!doctype" in lowered_body or b"<!entity" in lowered_body:
+        return SitemapEvidence(
+            url=sitemap_url,
+            status="invalid_xml",
+            http_status_code=response.status_code,
+        )
+    try:
+        root = ET.fromstring(response.body)
+    except (ET.ParseError, RecursionError):
+        return SitemapEvidence(
+            url=sitemap_url,
+            status="invalid_xml",
+            http_status_code=response.status_code,
+        )
+
+    root_name = _xml_local_name(root.tag)
+    if root_name == "urlset":
+        entry_name: Literal["url", "sitemap"] = "url"
+        document_type: SitemapDocumentType = "urlset"
+    elif root_name == "sitemapindex":
+        entry_name = "sitemap"
+        document_type = "sitemapindex"
+    else:
+        return SitemapEvidence(
+            url=sitemap_url,
+            status="invalid_xml",
+            http_status_code=response.status_code,
+        )
+
+    entries = [
+        child for child in root
+        if _xml_local_name(child.tag) == entry_name
+    ]
+    truncated = len(entries) > _MAX_SITEMAP_ENTRIES
+    seen_locations: set[str] = set()
+    child_sitemap_urls: list[str] = []
+    rejected_count = 0
+    base_url = base_url or sitemap_url
+    homepage_target = _normalized_sitemap_location(
+        homepage_url,
+        base_url,
+        allowed_host,
+    )
+    canonical_target = (
+        _normalized_sitemap_location(canonical_url, base_url, allowed_host)
+        if canonical_url is not None
+        else None
+    )
+    homepage_found = False
+    canonical_found = False
+    for entry in entries[:_MAX_SITEMAP_ENTRIES]:
+        location = next(
+            (
+                child.text.strip()
+                for child in entry
+                if _xml_local_name(child.tag) == "loc"
+                and child.text
+                and child.text.strip()
+            ),
+            None,
+        )
+        normalized = (
+            _normalized_sitemap_location(location, base_url, allowed_host)
+            if location is not None
+            else None
+        )
+        if normalized is None:
+            rejected_count += 1
+            continue
+        if normalized in seen_locations:
+            continue
+        seen_locations.add(normalized)
+        if document_type == "urlset":
+            homepage_found = homepage_found or normalized == homepage_target
+            canonical_found = canonical_found or normalized == canonical_target
+        if (
+            document_type == "sitemapindex"
+            and len(child_sitemap_urls) < _MAX_SITEMAP_CHILD_URLS
+        ):
+            child_sitemap_urls.append(normalized)
+
+    location_count = len(seen_locations)
+    if (
+        document_type == "sitemapindex"
+        and location_count > _MAX_SITEMAP_CHILD_URLS
+    ):
+        truncated = True
+    return SitemapEvidence(
+        url=sitemap_url,
+        status="fetched",
+        http_status_code=response.status_code,
+        document_type=document_type,
+        url_count=location_count if document_type == "urlset" else None,
+        homepage_listed=(
+            homepage_found
+            if document_type == "urlset" and not truncated and rejected_count == 0
+            else None
+        ),
+        canonical_url_listed=(
+            canonical_found
+            if (
+                document_type == "urlset"
+                and canonical_target is not None
+                and not truncated
+                and rejected_count == 0
+            )
+            else None
+        ),
+        child_sitemap_count=(
+            location_count if document_type == "sitemapindex" else None
+        ),
+        child_sitemap_urls=tuple(child_sitemap_urls),
+        rejected_count=rejected_count,
+        truncated=truncated,
+    )
+
+
+def _fetch_sitemap_evidence(
+    sitemap_urls: tuple[str, ...],
+    allowed_host: str,
+    resolver: DnsAddressLookup,
+    transport: PinnedHttpTransport,
+    robots_parser: RobotFileParser | None,
+    sitemap_deadline: float,
+    homepage_url: str,
+    canonical_url: str | None,
+) -> tuple[SitemapEvidence, ...]:
+    evidence: list[SitemapEvidence] = []
+    for sitemap_url in sitemap_urls:
+        if robots_parser is not None and not robots_parser.can_fetch(
+            _ROBOTS_USER_AGENT,
+            sitemap_url,
+        ):
+            evidence.append(
+                SitemapEvidence(url=sitemap_url, status="robots_disallowed")
+            )
+            continue
+        if monotonic() >= sitemap_deadline:
+            evidence.append(
+                SitemapEvidence(url=sitemap_url, status="deadline_exceeded")
+            )
+            continue
+        try:
+            final_url, response, _ = _fetch_url(
+                sitemap_url,
+                allowed_host,
+                resolver,
+                transport,
+                sitemap_deadline,
+                max_body_bytes=_MAX_SITEMAP_BODY_BYTES,
+                robots_parser=robots_parser,
+            )
+        except CrawlUnavailable:
+            status: SitemapFetchStatus = (
+                "deadline_exceeded"
+                if monotonic() >= sitemap_deadline
+                else "fetch_unavailable"
+            )
+            evidence.append(SitemapEvidence(url=sitemap_url, status=status))
+            continue
+        except CrawlDisallowed:
+            evidence.append(
+                SitemapEvidence(url=sitemap_url, status="robots_disallowed")
+            )
+            continue
+        except CrawlPolicyError:
+            evidence.append(
+                SitemapEvidence(url=sitemap_url, status="fetch_rejected")
+            )
+            continue
+
+        if not 200 <= response.status_code < 300 or response.status_code == 206:
+            evidence.append(
+                SitemapEvidence(
+                    url=sitemap_url,
+                    status="http_error",
+                    http_status_code=response.status_code,
+                )
+            )
+            continue
+        evidence.append(
+            _parse_sitemap_document(
+                sitemap_url,
+                response,
+                allowed_host,
+                homepage_url,
+                canonical_url,
+                base_url=_without_query(final_url),
+            )
+        )
+    return tuple(evidence)
+
+
 class HomepageCrawler:
     def __init__(
         self,
@@ -429,22 +911,37 @@ class HomepageCrawler:
         deadline = monotonic() + _MAX_RUN_SECONDS
 
         robots_url = f"{scheme}://{host}/robots.txt"
-        _, robots_response, _ = _fetch_url(
+        robots_final_url, robots_response, _ = _fetch_url(
             robots_url,
             host,
             self._resolver,
             self._transport,
             deadline,
         )
+        sitemap_urls: tuple[str, ...] = ()
+        sitemap_declaration_count = 0
+        sitemap_rejected_count = 0
+        sitemap_discovery_truncated = False
+        robots_parser: RobotFileParser | None = None
         if (
             200 <= robots_response.status_code < 300
             and robots_response.status_code != 206
         ):
-            parser = RobotFileParser()
-            parser.parse(
+            robots_parser = RobotFileParser()
+            robots_parser.parse(
                 robots_response.body.decode("utf-8", errors="replace").splitlines()
             )
-            if not parser.can_fetch(_ROBOTS_USER_AGENT, homepage_url):
+            (
+                sitemap_urls,
+                sitemap_declaration_count,
+                sitemap_rejected_count,
+                sitemap_discovery_truncated,
+            ) = _discover_sitemaps(
+                robots_parser,
+                _without_query(robots_final_url),
+                host,
+            )
+            if not robots_parser.can_fetch(_ROBOTS_USER_AGENT, homepage_url):
                 raise CrawlDisallowed("robots.txt disallows crawling this homepage.")
         elif robots_response.status_code not in {404, 410}:
             if 400 <= robots_response.status_code < 500:
@@ -461,13 +958,87 @@ class HomepageCrawler:
             self._resolver,
             self._transport,
             deadline,
+            robots_parser=robots_parser,
         )
         content_type = homepage_response.headers.get("content-type", "")
+        metadata = _page_metadata(content_type, homepage_response.body, final_url)
+        sitemap_deadline = min(deadline, monotonic() + _MAX_SITEMAP_SECONDS)
+        canonical_url = metadata.canonical_url if metadata is not None else None
+        homepage_membership_url = _without_query(final_url)
+        top_level_sitemap_evidence = _fetch_sitemap_evidence(
+            sitemap_urls,
+            host,
+            self._resolver,
+            self._transport,
+            robots_parser,
+            sitemap_deadline,
+            homepage_membership_url,
+            canonical_url,
+        )
+        seen_sitemap_urls = set(sitemap_urls)
+        child_sitemap_urls: list[str] = []
+        for item in top_level_sitemap_evidence:
+            for child_url in item.child_sitemap_urls:
+                if child_url not in seen_sitemap_urls:
+                    seen_sitemap_urls.add(child_url)
+                    child_sitemap_urls.append(child_url)
+
+        child_fetch_limit = max(
+            0,
+            _MAX_SITEMAP_DOCUMENTS - len(sitemap_urls),
+        )
+        child_urls_to_fetch = tuple(child_sitemap_urls[:child_fetch_limit])
+        child_sitemap_evidence = _fetch_sitemap_evidence(
+            child_urls_to_fetch,
+            host,
+            self._resolver,
+            self._transport,
+            robots_parser,
+            sitemap_deadline,
+            homepage_membership_url,
+            canonical_url,
+        )
+        skipped_child_evidence = tuple(
+            SitemapEvidence(
+                url=child_url,
+                status="fetch_limit_reached",
+            )
+            for child_url in child_sitemap_urls[child_fetch_limit:]
+        )
+        sitemap_evidence = (
+            top_level_sitemap_evidence
+            + child_sitemap_evidence
+            + skipped_child_evidence
+        )
         return CrawlResult(
             final_url=_without_query(final_url),
             status_code=homepage_response.status_code,
             content_type=content_type,
             bytes_read=len(homepage_response.body),
-            title=_page_title(content_type, homepage_response.body),
+            title=metadata.title if metadata is not None else None,
             redirect_count=redirects,
+            meta_description=(
+                metadata.description if metadata is not None else None
+            ),
+            h1_count=metadata.h1_count if metadata is not None else None,
+            meta_robots_noindex=(
+                metadata.robots_noindex if metadata is not None else None
+            ),
+            x_robots_noindex=_has_noindex(
+                homepage_response.headers["x-robots-tag"]
+            )
+            if "x-robots-tag" in homepage_response.headers
+            else None,
+            canonical_url=(
+                metadata.canonical_url if metadata is not None else None
+            ),
+            canonical_link_count=(
+                metadata.canonical_link_count if metadata is not None else None
+            ),
+            robots_status_code=robots_response.status_code,
+            sitemap_urls=sitemap_urls,
+            sitemap_declaration_count=sitemap_declaration_count,
+            sitemap_rejected_count=sitemap_rejected_count,
+            sitemap_discovery_truncated=sitemap_discovery_truncated,
+            sitemap_evidence=sitemap_evidence,
         )

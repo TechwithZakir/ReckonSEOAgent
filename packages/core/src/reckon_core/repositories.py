@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import secrets
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
@@ -12,6 +13,7 @@ from reckon_core.persistence import (
     AuditEvent,
     CrawlRun,
     ExternalIdentity,
+    NativeAccount,
     Organization,
     OrganizationCreationRequest,
     OrganizationMembership,
@@ -20,10 +22,23 @@ from reckon_core.persistence import (
     WebsiteCreationRequest,
 )
 from reckon_core.crawler import CrawlResult
+from reckon_core.seo_audit import HomepageAudit
 from reckon_core.tenancy import (
     OrganizationRole,
     TenantAccessDenied,
+    TenantContext,
 )
+
+_STALE_CRAWL_AFTER = timedelta(minutes=5)
+
+
+def utc_day(now: datetime) -> tuple[datetime, datetime]:
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("A timezone-aware timestamp is required.")
+    day_start = now.astimezone(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    return day_start, day_start + timedelta(days=1)
 
 
 class IdempotencyConflict(ValueError):
@@ -146,6 +161,93 @@ class SqlAlchemyOrganizationRepository:
         self._session = session
         self._is_postgresql = session.get_bind().dialect.name == "postgresql"
 
+    def list_members(
+        self, context: TenantContext, limit: int, after: UUID | None
+    ) -> tuple[list[tuple[UUID, str | None, OrganizationRole]], UUID | None]:
+        if type(limit) is not int or not 1 <= limit <= 50:
+            raise ValueError("The member page size must be between 1 and 50.")
+        if self._is_postgresql:
+            self._session.execute(
+                text("SELECT set_config('app.org_id', :organization_id, true)"),
+                {"organization_id": str(context.organization_id)},
+            )
+        membership = self._session.execute(
+            select(OrganizationMembership.is_active, OrganizationMembership.role)
+            .where(
+                OrganizationMembership.organization_id == context.organization_id,
+                OrganizationMembership.user_id == context.principal.user_id,
+            )
+            .with_for_update()
+        ).one_or_none()
+        if (
+            membership is None or membership.is_active is not True
+            or membership.role not in {OrganizationRole.OWNER, OrganizationRole.ADMIN}
+        ):
+            raise TenantAccessDenied
+        query = (
+            select(OrganizationMembership.user_id, NativeAccount.email, OrganizationMembership.role)
+            .outerjoin(NativeAccount, NativeAccount.user_id == OrganizationMembership.user_id)
+            .where(
+                OrganizationMembership.organization_id == context.organization_id,
+                OrganizationMembership.is_active.is_(True),
+            )
+        )
+        if after is not None:
+            query = query.where(OrganizationMembership.user_id > after)
+        rows = self._session.execute(
+            query.order_by(OrganizationMembership.user_id).limit(limit + 1)
+        ).all()
+        page = rows[:limit]
+        cursor = page[-1].user_id if len(rows) > limit else None
+        return [(row.user_id, row.email, row.role) for row in page], cursor
+
+    def list_for_user(
+        self, user_id: UUID, limit: int, after: UUID | None
+    ) -> tuple[list[tuple[UUID, str, OrganizationRole]], UUID | None]:
+        if type(limit) is not int or not 1 <= limit <= 50:
+            raise ValueError("The organization page size must be between 1 and 50.")
+        if self._is_postgresql:
+            self._session.execute(
+                text("SELECT set_config('app.org_id', '', true)")
+            )
+            self._session.execute(
+                text("SELECT set_config('app.usr_id', :user_id, true)"),
+                {"user_id": str(user_id)},
+            )
+        query = select(OrganizationMembership.organization_id).where(
+            OrganizationMembership.user_id == user_id,
+            OrganizationMembership.is_active.is_(True),
+        )
+        if after is not None:
+            query = query.where(OrganizationMembership.organization_id > after)
+        ids = self._session.scalars(
+            query.order_by(OrganizationMembership.organization_id).limit(limit + 1)
+        ).all()
+        page_ids = ids[:limit]
+        next_cursor = page_ids[-1] if len(ids) > limit else None
+        organizations: list[tuple[UUID, str, OrganizationRole]] = []
+        for organization_id in page_ids:
+            if self._is_postgresql:
+                self._session.execute(
+                    text("SELECT set_config('app.org_id', :organization_id, true)"),
+                    {"organization_id": str(organization_id)},
+                )
+            result = self._session.execute(
+                select(Organization.id, Organization.name, OrganizationMembership.role)
+                .join(
+                    OrganizationMembership,
+                    OrganizationMembership.organization_id == Organization.id,
+                )
+                .where(
+                    Organization.id == organization_id,
+                    OrganizationMembership.user_id == user_id,
+                    OrganizationMembership.is_active.is_(True),
+                )
+            ).one_or_none()
+            if result is not None:
+                organizations.append((result.id, result.name, result.role))
+        return organizations, next_cursor
+
     def create_for_owner(
         self,
         owner_user_id: UUID,
@@ -209,6 +311,7 @@ class SqlAlchemyOrganizationRepository:
                 name=name,
             )
         )
+        self._session.flush()
         self._session.add(
             OrganizationMembership(
                 organization_id=organization_id,
@@ -388,6 +491,21 @@ class SqlAlchemyCrawlRepository:
         self._session = session
         self._is_postgresql = session.get_bind().dialect.name == "postgresql"
 
+    def count_for_period(
+        self, organization_id: UUID, period_start: datetime, period_end: datetime
+    ) -> int:
+        self._set_tenant(organization_id)
+        count = self._session.scalar(
+            select(func.count(CrawlRun.id)).where(
+                CrawlRun.organization_id == organization_id,
+                CrawlRun.started_at >= period_start,
+                CrawlRun.started_at < period_end,
+            )
+        )
+        if count is None:
+            raise RuntimeError("The crawl usage count could not be calculated.")
+        return count
+
     def reserve(
         self,
         organization_id: UUID,
@@ -417,6 +535,37 @@ class SqlAlchemyCrawlRepository:
         if not website.is_verified:
             raise WebsiteNotVerified
 
+        now = datetime.now(timezone.utc)
+        stale_before = now - _STALE_CRAWL_AFTER
+        stale_runs = self._session.scalars(
+            select(CrawlRun)
+            .where(
+                CrawlRun.organization_id == organization_id,
+                CrawlRun.status == "running",
+                CrawlRun.started_at < stale_before,
+            )
+            .with_for_update()
+        ).all()
+        for stale_run in stale_runs:
+            stale_run.status = "failed"
+            stale_run.completed_at = now
+            stale_run.error_code = "worker_interrupted"
+            self._session.add(
+                AuditEvent(
+                    organization_id=organization_id,
+                    actor_user_id=actor_user_id,
+                    action="crawl.recovered",
+                    resource_type="crawl_run",
+                    resource_id=stale_run.id,
+                    request_id=request_id,
+                    details={
+                        "site_id": str(stale_run.website_id),
+                        "status": "failed",
+                        "error_code": "worker_interrupted",
+                    },
+                )
+            )
+
         request_hash = hashlib.sha256(str(website_id).encode("ascii")).hexdigest()
         existing_run = self._session.scalar(
             select(CrawlRun)
@@ -431,16 +580,8 @@ class SqlAlchemyCrawlRepository:
                 raise IdempotencyConflict
             return website, existing_run, True
 
-        now = datetime.now(timezone.utc)
-        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        day_end = day_start + timedelta(days=1)
-        used = self._session.scalar(
-            select(func.count(CrawlRun.id)).where(
-                CrawlRun.organization_id == organization_id,
-                CrawlRun.started_at >= day_start,
-                CrawlRun.started_at < day_end,
-            )
-        ) or 0
+        day_start, day_end = utc_day(now)
+        used = self.count_for_period(organization_id, day_start, day_end)
         if used >= daily_limit:
             raise CrawlBudgetExceeded
 
@@ -511,10 +652,13 @@ class SqlAlchemyCrawlRepository:
         request_id: UUID,
         status: str,
         result: CrawlResult | None = None,
+        audit: HomepageAudit | None = None,
         error_code: str | None = None,
     ) -> CrawlRun:
         if status not in {"completed", "disallowed", "failed"}:
             raise ValueError("A crawl run cannot be finished with this status.")
+        if audit is not None and result is None:
+            raise ValueError("A crawl audit requires page evidence.")
         self._set_tenant(run.organization_id)
         if run.status != "running":
             raise CrawlRequestInProgress
@@ -532,7 +676,32 @@ class SqlAlchemyCrawlRepository:
             run.content_type = result.content_type[:255]
             run.bytes_read = result.bytes_read
             run.title = result.title
+            run.meta_description = result.meta_description
+            run.h1_count = result.h1_count
+            run.meta_robots_noindex = result.meta_robots_noindex
+            run.x_robots_noindex = result.x_robots_noindex
+            run.canonical_url = result.canonical_url
+            run.canonical_link_count = result.canonical_link_count
+            run.robots_status_code = result.robots_status_code
+            run.sitemap_urls = (
+                list(result.sitemap_urls)
+                if result.sitemap_urls is not None
+                else None
+            )
+            run.sitemap_evidence = (
+                [asdict(item) for item in result.sitemap_evidence]
+                if result.sitemap_evidence is not None
+                else None
+            )
+            run.sitemap_declaration_count = result.sitemap_declaration_count
+            run.sitemap_rejected_count = result.sitemap_rejected_count
+            run.sitemap_discovery_truncated = result.sitemap_discovery_truncated
             run.redirect_count = result.redirect_count
+            if audit is not None:
+                run.audit_version = audit.version
+                run.audit_findings = [
+                    asdict(finding) for finding in audit.findings
+                ]
             details.update(
                 {
                     "http_status": str(result.status_code),

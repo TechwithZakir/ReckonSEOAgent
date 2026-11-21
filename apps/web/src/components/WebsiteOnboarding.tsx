@@ -7,6 +7,8 @@ import {
   verifyWebsite,
 } from '../lib/websites'
 import type { Website } from '../lib/websites'
+import { CrawlHistory } from './CrawlHistory'
+import { CrawlUsage } from './CrawlUsage'
 
 function canManageWebsites(role: OrganizationContext['role']): boolean {
   return role === 'owner' || role === 'admin'
@@ -26,6 +28,7 @@ export function WebsiteOnboarding({
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [refreshVersion, setRefreshVersion] = useState(0)
+  const [usageVersion, setUsageVersion] = useState(0)
   const idempotencyKey = useRef(crypto.randomUUID())
   const mayManage = canManageWebsites(organization.role)
 
@@ -123,11 +126,15 @@ export function WebsiteOnboarding({
   }
 
   return (
-    <section aria-labelledby="websites-title" className="website-onboarding">
+    <section
+      aria-labelledby="websites-title"
+      className="website-onboarding"
+      id="website-onboarding"
+    >
       <div className="website-onboarding__heading">
         <div>
-          <p className="section-kicker">WEBSITE ONBOARDING</p>
-          <h3 id="websites-title">Verify a website you control</h3>
+          <p className="section-kicker">WEBSITE WORKSPACE</p>
+          <h3 id="websites-title">Your websites and crawl evidence</h3>
         </div>
         <button
           className="button button--secondary"
@@ -140,8 +147,14 @@ export function WebsiteOnboarding({
       </div>
       <p className="website-onboarding__description">
         Add the site’s DNS TXT record to prove control. Registration does not
-        start a crawl; crawler network protections are a separate step.
+        start a crawl. Once verified, you can start a crawl and inspect its history.
       </p>
+
+      <CrawlUsage
+        accessToken={accessToken}
+        organizationId={organization.organization_id}
+        version={usageVersion}
+      />
 
       {mayManage ? (
         <form
@@ -185,7 +198,7 @@ export function WebsiteOnboarding({
         </p>
       )}
 
-      {!loading && websites.length === 0 && (
+      {!loading && !error && websites.length === 0 && (
         <p className="website-onboarding__empty">No websites are registered yet.</p>
       )}
 
@@ -242,6 +255,13 @@ export function WebsiteOnboarding({
                 )}
               </>
             )}
+            <CrawlHistory
+              accessToken={accessToken}
+              organizationId={organization.organization_id}
+              websiteId={website.website_id}
+              verified={website.verification_status === 'verified'}
+              onUsageChanged={() => setUsageVersion((version) => version + 1)}
+            />
           </article>
         ))}
       </div>

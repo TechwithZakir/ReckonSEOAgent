@@ -17,6 +17,7 @@ from reckon_core.persistence import (
     AuditEvent,
     Base,
     ExternalIdentity,
+    NativeAccount,
     Organization,
     OrganizationCreationRequest,
     OrganizationMembership,
@@ -186,6 +187,117 @@ def test_organization_context_hides_unrelated_tenant(
     assert response.json() == {"detail": "Organization not found."}
 
 
+def test_member_listing_is_manager_only_paginated_and_tenant_scoped(
+    organization_api: tuple[FastAPI, sessionmaker[Session], UUID],
+) -> None:
+    app, factory, organization_id = organization_api
+    with factory.begin() as session:
+        identity = session.scalar(select(ExternalIdentity))
+        assert identity is not None
+        actor_id = identity.user_id
+        member = User()
+        outsider = User()
+        other_org = Organization(name="Other organization")
+        session.add_all((member, outsider, other_org))
+        session.flush()
+        member_id, outsider_id = member.id, outsider.id
+        session.add_all((
+            NativeAccount(user_id=member.id, email="member@example.com", password_hash="fixture"),
+            OrganizationMembership(
+                organization_id=organization_id, user_id=member.id,
+                role=OrganizationRole.VIEWER, is_active=True,
+            ),
+            OrganizationMembership(
+                organization_id=other_org.id, user_id=outsider.id,
+                role=OrganizationRole.OWNER, is_active=True,
+            ),
+        ))
+
+    async def run() -> None:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test",
+            headers={"Authorization": "Bearer verified-test-token"},
+        ) as client:
+            path = f"/api/v1/organizations/{organization_id}/members"
+            assert (await client.get(path)).status_code == 403
+            with factory.begin() as session:
+                membership = session.get(OrganizationMembership, {
+                    "organization_id": organization_id, "user_id": actor_id,
+                })
+                assert membership is not None
+                membership.role = OrganizationRole.ADMIN
+            first = await client.get(path, params={"limit": 1})
+            assert first.status_code == 200 and first.headers["cache-control"] == "no-store"
+            assert len(first.json()["items"]) == 1
+            cursor = first.json()["next_cursor"]
+            assert cursor is not None
+            second = await client.get(path, params={"limit": 1, "after": cursor})
+            assert second.status_code == 200 and second.json()["next_cursor"] is None
+            items = first.json()["items"] + second.json()["items"]
+            assert {item["user_id"] for item in items} == {str(actor_id), str(member_id)}
+            assert all(item["user_id"] != str(outsider_id) for item in items)
+            assert next(item for item in items if item["user_id"] == str(member_id))["email"] == "member@example.com"
+            assert next(item for item in items if item["user_id"] == str(actor_id))["email"] is None
+            assert (await client.get(f"/api/v1/organizations/{uuid4()}/members")).status_code == 404
+
+    asyncio.run(run())
+
+
+def test_organization_list_paginates_only_active_memberships(
+    organization_api: tuple[FastAPI, sessionmaker[Session], UUID],
+) -> None:
+    app, factory, first_id = organization_api
+    with factory() as session:
+        identity = session.scalar(select(ExternalIdentity))
+        assert identity is not None
+        user_id = identity.user_id
+        second, inactive, unrelated = (
+            Organization(name="Second"), Organization(name="Inactive"),
+            Organization(name="Other tenant"),
+        )
+        other_user = User()
+        session.add_all((second, inactive, unrelated, other_user))
+        session.flush()
+        session.add_all((
+            OrganizationMembership(
+                organization_id=second.id, user_id=user_id,
+                role=OrganizationRole.ADMIN, is_active=True,
+            ),
+            OrganizationMembership(
+                organization_id=inactive.id, user_id=user_id,
+                role=OrganizationRole.VIEWER, is_active=False,
+            ),
+            OrganizationMembership(
+                organization_id=unrelated.id, user_id=other_user.id,
+                role=OrganizationRole.OWNER, is_active=True,
+            ),
+        ))
+        second_id = second.id
+        session.commit()
+
+    async def run() -> None:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            path = "/api/v1/organizations"
+            assert (await client.get(path)).status_code == 401
+            assert (await client.get(path, headers={"Authorization": "Bearer verified-test-token"}, params={"limit": 51})).status_code == 422
+            headers = {"Authorization": "Bearer verified-test-token"}
+            first = await client.get(path, headers=headers, params={"limit": 1})
+            assert first.status_code == 200 and first.headers["cache-control"] == "no-store"
+            assert len(first.json()["items"]) == 1
+            cursor = first.json()["next_cursor"]
+            assert cursor is not None
+            second_page = await client.get(path, headers=headers, params={"limit": 1, "after": cursor})
+            assert second_page.status_code == 200
+            assert second_page.json()["next_cursor"] is None
+            rows = first.json()["items"] + second_page.json()["items"]
+            assert {row["organization_id"] for row in rows} == {str(first_id), str(second_id)}
+            assert {row["name"] for row in rows} == {"Tenant Alpha", "Second"}
+
+    asyncio.run(run())
+
+
 def test_authenticated_user_can_create_owned_organization(
     organization_api: tuple[FastAPI, sessionmaker[Session], UUID],
 ) -> None:
@@ -218,6 +330,18 @@ def test_authenticated_user_can_create_owned_organization(
         assert audit_event.actor_user_id is not None
         assert audit_event.request_id == request_id
         assert audit_event.details == {"name": "Tenant Beta"}
+
+
+def test_organization_creation_respects_database_foreign_keys(
+    organization_api: tuple[FastAPI, sessionmaker[Session], UUID],
+) -> None:
+    app, factory, _ = organization_api
+    with factory() as session:
+        session.connection().exec_driver_sql("PRAGMA foreign_keys=ON")
+    response = asyncio.run(
+        create_organization_request(app, "Foreign key fixture", "create-foreign-key-001")
+    )
+    assert response.status_code == 201
 
 
 def test_organization_creation_replays_idempotent_request(

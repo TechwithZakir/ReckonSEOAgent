@@ -11,6 +11,7 @@ from reckon_core.crawler import (
     CrawlUnavailable,
     HomepageCrawler,
     HttpFetchResponse,
+    SitemapEvidence,
     StdlibPinnedHttpTransport,
 )
 
@@ -73,11 +74,599 @@ def test_crawl_pins_request_to_public_dns_answer_and_extracts_title() -> None:
     assert result.final_url == "https://example.com/"
     assert result.status_code == 200
     assert result.title == "Example page"
+    assert result.meta_description is None
+    assert result.h1_count == 0
+    assert result.robots_status_code == 404
+    assert result.sitemap_urls == ()
+    assert result.sitemap_declaration_count == 0
     assert result.bytes_read == len(b"<html><title> Example page </title></html>")
     assert resolver.hosts == ["example.com", "example.com"]
     assert transport.requests[0][0] == "https://example.com/robots.txt"
     assert transport.requests[1][0] == "https://example.com/"
     assert transport.requests[1][1:3] == ("example.com", "93.184.216.34")
+
+
+def test_crawl_extracts_bounded_meta_description_and_h1_count() -> None:
+    html = (
+        '<META NAME="Description" CONTENT="  Useful &amp; concise   summary ">'
+        "<h1>First</h1><H1>Second</H1>"
+    ).encode()
+    transport = FakeTransport(
+        (
+            response(404),
+            response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                body=html,
+            ),
+        )
+    )
+
+    result = HomepageCrawler(FakeAddressResolver(), transport).crawl(
+        "https",
+        "example.com",
+    )
+
+    assert result.meta_description == "Useful & concise summary"
+    assert result.h1_count == 2
+
+
+def test_crawl_captures_noindex_signals_and_redacts_canonical_url() -> None:
+    transport = FakeTransport(
+        (
+            response(404),
+            response(
+                200,
+                headers={
+                    "content-type": "text/html",
+                    "x-robots-tag": "googlebot: noindex, nofollow",
+                },
+                body=(
+                    b'<meta name="robots" content="index, follow">'
+                    b'<meta name="googlebot" content="NoIndex">'
+                    b'<link rel="alternate CANONICAL" '
+                    b'href="/preferred?access_token=secret#section">'
+                ),
+            ),
+        )
+    )
+
+    result = HomepageCrawler(FakeAddressResolver(), transport).crawl(
+        "https",
+        "example.com",
+    )
+
+    assert result.meta_robots_noindex is True
+    assert result.x_robots_noindex is True
+    assert result.canonical_url == "https://example.com/preferred"
+    assert result.canonical_link_count == 1
+    assert "secret" not in str(result.canonical_url)
+
+
+def test_crawl_discovers_only_safe_same_host_sitemap_urls() -> None:
+    robots = b"\n".join(
+        (
+            b"Sitemap: https://example.com/sitemap.xml?token=secret",
+            b"Sitemap: /maps/index.xml",
+            b"Sitemap: https://other.example.net/sitemap.xml",
+            b"Sitemap: javascript:alert(1)",
+        )
+    )
+    transport = FakeTransport(
+        (
+            response(200, body=robots),
+            response(200, headers={"content-type": "text/html"}),
+            response(
+                200,
+                headers={"content-type": "application/xml"},
+                body=b"<urlset><url><loc>https://example.com/a</loc></url></urlset>",
+            ),
+            response(
+                200,
+                headers={"content-type": "application/xml"},
+                body=b"<urlset><url><loc>https://example.com/b</loc></url></urlset>",
+            ),
+        )
+    )
+
+    result = HomepageCrawler(FakeAddressResolver(), transport).crawl(
+        "https",
+        "example.com",
+    )
+
+    assert result.robots_status_code == 200
+    assert result.sitemap_declaration_count == 4
+    assert result.sitemap_urls == (
+        "https://example.com/sitemap.xml",
+        "https://example.com/maps/index.xml",
+    )
+    assert result.sitemap_rejected_count == 2
+    assert result.sitemap_discovery_truncated is False
+    assert [item.url_count for item in result.sitemap_evidence or ()] == [1, 1]
+    assert len(transport.requests) == 4
+    assert all(
+        request[-1] == crawler_module._MAX_SITEMAP_BODY_BYTES
+        for request in transport.requests[2:]
+    )
+    assert all("secret" not in url for url, *_ in transport.requests)
+
+
+def test_crawl_caps_sitemap_candidates_and_fetches_only_the_retained_urls() -> None:
+    robots = "\n".join(
+        f"Sitemap: https://example.com/sitemap-{index}.xml"
+        for index in range(12)
+    ).encode()
+    transport = FakeTransport(
+        (
+            response(200, body=robots),
+            response(200, headers={"content-type": "text/html"}),
+            *(response(404) for _ in range(10)),
+        )
+    )
+
+    result = HomepageCrawler(FakeAddressResolver(), transport).crawl(
+        "https",
+        "example.com",
+    )
+
+    assert result.sitemap_declaration_count == 12
+    assert result.sitemap_urls is not None
+    assert len(result.sitemap_urls) == 10
+    assert result.sitemap_discovery_truncated is True
+    assert len(result.sitemap_evidence or ()) == 10
+    assert len(transport.requests) == 12
+
+
+def test_crawl_caps_the_number_of_robots_sitemap_declarations_examined() -> None:
+    declarations = ["Sitemap: https://example.com/sitemap.xml"] * 100
+    declarations.append("Sitemap: https://external.example.net/sitemap.xml")
+    transport = FakeTransport(
+        (
+            response(200, body="\n".join(declarations).encode()),
+            response(200, headers={"content-type": "text/html"}),
+            response(404),
+        )
+    )
+
+    result = HomepageCrawler(FakeAddressResolver(), transport).crawl(
+        "https",
+        "example.com",
+    )
+
+    assert result.sitemap_declaration_count == 101
+    assert result.sitemap_urls == ("https://example.com/sitemap.xml",)
+    assert result.sitemap_rejected_count == 0
+    assert result.sitemap_discovery_truncated is True
+    assert len(transport.requests) == 3
+
+
+def test_crawl_counts_only_unique_same_host_urls_in_sitemap_xml() -> None:
+    sitemap = b"""<?xml version="1.0" encoding="UTF-8"?>
+    <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+      <url><loc>https://example.com/page?token=secret</loc></url>
+      <url><loc>https://example.com/page</loc></url>
+      <url><loc>https://external.example.net/page</loc></url>
+      <url><loc>not a URL</loc></url>
+    </urlset>"""
+    transport = FakeTransport(
+        (
+            response(200, body=b"Sitemap: https://example.com/sitemap.xml"),
+            response(200, headers={"content-type": "text/html"}),
+            response(
+                200,
+                headers={"content-type": "application/xml; charset=utf-8"},
+                body=sitemap,
+            ),
+        )
+    )
+
+    result = HomepageCrawler(FakeAddressResolver(), transport).crawl(
+        "https",
+        "example.com",
+    )
+
+    assert result.sitemap_evidence == (
+        SitemapEvidence(
+            url="https://example.com/sitemap.xml",
+            status="fetched",
+            http_status_code=200,
+            document_type="urlset",
+            url_count=1,
+            homepage_listed=None,
+            canonical_url_listed=None,
+            rejected_count=2,
+        ),
+    )
+    assert "secret" not in str(result.sitemap_evidence)
+    assert len(transport.requests) == 3
+
+
+def test_crawl_records_homepage_and_canonical_sitemap_membership() -> None:
+    sitemap = b"""<urlset>
+      <url><loc>https://example.com/</loc></url>
+      <url><loc>https://example.com/preferred</loc></url>
+    </urlset>"""
+    transport = FakeTransport(
+        (
+            response(200, body=b"Sitemap: https://example.com/sitemap.xml"),
+            response(
+                200,
+                headers={"content-type": "text/html"},
+                body=b'<link rel="canonical" href="/preferred?ref=private">',
+            ),
+            response(
+                200,
+                headers={"content-type": "application/xml"},
+                body=sitemap,
+            ),
+        )
+    )
+
+    result = HomepageCrawler(FakeAddressResolver(), transport).crawl(
+        "https",
+        "example.com",
+    )
+
+    assert result.sitemap_evidence is not None
+    assert result.sitemap_evidence[0].homepage_listed is True
+    assert result.sitemap_evidence[0].canonical_url_listed is True
+    assert result.canonical_url == "https://example.com/preferred"
+
+
+def test_crawl_marks_absent_urls_false_in_a_complete_sitemap() -> None:
+    sitemap = b"<urlset><url><loc>https://example.com/other</loc></url></urlset>"
+    transport = FakeTransport(
+        (
+            response(200, body=b"Sitemap: https://example.com/sitemap.xml"),
+            response(
+                200,
+                headers={"content-type": "text/html"},
+                body=b'<link rel="canonical" href="/preferred">',
+            ),
+            response(
+                200,
+                headers={"content-type": "application/xml"},
+                body=sitemap,
+            ),
+        )
+    )
+
+    result = HomepageCrawler(FakeAddressResolver(), transport).crawl(
+        "https",
+        "example.com",
+    )
+
+    assert result.sitemap_evidence is not None
+    assert result.sitemap_evidence[0].homepage_listed is False
+    assert result.sitemap_evidence[0].canonical_url_listed is False
+
+
+def test_crawl_marks_sitemap_membership_unknown_when_url_set_is_truncated() -> None:
+    sitemap = b"<urlset>" + (b"<url/>" * 10_001) + b"</urlset>"
+    transport = FakeTransport(
+        (
+            response(200, body=b"Sitemap: https://example.com/sitemap.xml"),
+            response(200, headers={"content-type": "text/html"}),
+            response(
+                200,
+                headers={"content-type": "application/xml"},
+                body=sitemap,
+            ),
+        )
+    )
+
+    result = HomepageCrawler(FakeAddressResolver(), transport).crawl(
+        "https",
+        "example.com",
+    )
+
+    assert result.sitemap_evidence is not None
+    assert result.sitemap_evidence[0].homepage_listed is None
+
+
+def test_crawl_fetches_validated_sitemap_index_children() -> None:
+    sitemap_index = b"""<sitemapindex>
+      <sitemap><loc>https://example.com/child.xml</loc></sitemap>
+      <sitemap><loc>https://external.example.net/child.xml</loc></sitemap>
+    </sitemapindex>"""
+    transport = FakeTransport(
+        (
+            response(200, body=b"Sitemap: https://example.com/index.xml"),
+            response(200, headers={"content-type": "text/html"}),
+            response(
+                200,
+                headers={"content-type": "application/xml"},
+                body=sitemap_index,
+            ),
+            response(
+                200,
+                headers={"content-type": "application/xml"},
+                body=b"<urlset><url><loc>https://example.com/page</loc></url></urlset>",
+            ),
+        )
+    )
+
+    result = HomepageCrawler(FakeAddressResolver(), transport).crawl(
+        "https",
+        "example.com",
+    )
+
+    evidence = result.sitemap_evidence
+    assert evidence is not None
+    assert evidence[0].document_type == "sitemapindex"
+    assert evidence[0].child_sitemap_count == 1
+    assert evidence[0].child_sitemap_urls == (
+        "https://example.com/child.xml",
+    )
+    assert evidence[0].url_count is None
+    assert evidence[0].rejected_count == 1
+    assert evidence[1].url == "https://example.com/child.xml"
+    assert evidence[1].url_count == 1
+    assert len(transport.requests) == 4
+
+
+def test_crawl_shares_the_sitemap_document_limit_with_index_children() -> None:
+    robots = "\n".join(
+        f"Sitemap: https://example.com/sitemap-{index}.xml"
+        for index in range(9)
+    ).encode()
+    sitemap_index = b"""<sitemapindex>
+      <sitemap><loc>https://example.com/child-1.xml</loc></sitemap>
+      <sitemap><loc>https://example.com/child-2.xml</loc></sitemap>
+    </sitemapindex>"""
+    top_level_responses = (
+        response(
+            200,
+            headers={"content-type": "application/xml"},
+            body=sitemap_index,
+        ),
+        *(response(404) for _ in range(8)),
+    )
+    transport = FakeTransport(
+        (
+            response(200, body=robots),
+            response(200, headers={"content-type": "text/html"}),
+            *top_level_responses,
+            response(
+                200,
+                headers={"content-type": "application/xml"},
+                body=b"<urlset><url><loc>https://example.com/page</loc></url></urlset>",
+            ),
+        )
+    )
+
+    result = HomepageCrawler(FakeAddressResolver(), transport).crawl(
+        "https",
+        "example.com",
+    )
+
+    evidence = result.sitemap_evidence
+    assert evidence is not None
+    assert len(transport.requests) == 12
+    assert len([item for item in evidence if item.http_status_code is not None]) == 10
+    assert evidence[-2].url == "https://example.com/child-1.xml"
+    assert evidence[-2].status == "fetched"
+    assert evidence[-1].url == "https://example.com/child-2.xml"
+    assert evidence[-1].status == "fetch_limit_reached"
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        b"<!DOCTYPE urlset [<!ENTITY x SYSTEM 'file:///etc/passwd'>]>"
+        b"<urlset><url><loc>&x;</loc></url></urlset>",
+        b"<urlset><url>",
+    ),
+)
+def test_crawl_rejects_unsafe_or_malformed_sitemap_xml(body: bytes) -> None:
+    transport = FakeTransport(
+        (
+            response(200, body=b"Sitemap: https://example.com/sitemap.xml"),
+            response(200, headers={"content-type": "text/html"}),
+            response(
+                200,
+                headers={"content-type": "application/xml"},
+                body=body,
+            ),
+        )
+    )
+
+    result = HomepageCrawler(FakeAddressResolver(), transport).crawl(
+        "https",
+        "example.com",
+    )
+
+    assert result.sitemap_evidence is not None
+    assert result.sitemap_evidence[0].status == "invalid_xml"
+
+
+def test_crawl_does_not_fetch_robots_disallowed_sitemap() -> None:
+    robots = (
+        b"User-agent: *\n"
+        b"Disallow: /private/\n"
+        b"Sitemap: https://example.com/private/sitemap.xml"
+    )
+    transport = FakeTransport(
+        (
+            response(200, body=robots),
+            response(200, headers={"content-type": "text/html"}),
+        )
+    )
+
+    result = HomepageCrawler(FakeAddressResolver(), transport).crawl(
+        "https",
+        "example.com",
+    )
+
+    assert result.sitemap_evidence == (
+        SitemapEvidence(
+            url="https://example.com/private/sitemap.xml",
+            status="robots_disallowed",
+        ),
+    )
+    assert len(transport.requests) == 2
+
+
+def test_crawl_rechecks_robots_policy_after_sitemap_redirects() -> None:
+    robots = (
+        b"User-agent: *\n"
+        b"Disallow: /private/\n"
+        b"Sitemap: https://example.com/sitemap.xml"
+    )
+    transport = FakeTransport(
+        (
+            response(200, body=robots),
+            response(200, headers={"content-type": "text/html"}),
+            response(302, headers={"location": "/private/sitemap.xml"}),
+        )
+    )
+
+    result = HomepageCrawler(FakeAddressResolver(), transport).crawl(
+        "https",
+        "example.com",
+    )
+
+    assert result.sitemap_evidence == (
+        SitemapEvidence(
+            url="https://example.com/sitemap.xml",
+            status="robots_disallowed",
+        ),
+    )
+    assert len(transport.requests) == 3
+
+
+def test_crawl_rechecks_robots_policy_after_homepage_redirects() -> None:
+    robots = b"User-agent: *\nDisallow: /private/"
+    transport = FakeTransport(
+        (
+            response(200, body=robots),
+            response(302, headers={"location": "/private/home"}),
+        )
+    )
+
+    with pytest.raises(CrawlDisallowed):
+        HomepageCrawler(FakeAddressResolver(), transport).crawl(
+            "https",
+            "example.com",
+        )
+
+    assert len(transport.requests) == 2
+
+
+def test_crawl_rejects_sitemap_response_over_the_byte_limit() -> None:
+    oversized_body = b"<urlset/>" + b" " * crawler_module._MAX_SITEMAP_BODY_BYTES
+    transport = FakeTransport(
+        (
+            response(200, body=b"Sitemap: https://example.com/sitemap.xml"),
+            response(200, headers={"content-type": "text/html"}),
+            response(
+                200,
+                headers={"content-type": "application/xml"},
+                body=oversized_body,
+            ),
+        )
+    )
+
+    result = HomepageCrawler(FakeAddressResolver(), transport).crawl(
+        "https",
+        "example.com",
+    )
+
+    assert result.sitemap_evidence is not None
+    assert result.sitemap_evidence[0].status == "fetch_rejected"
+
+
+def test_crawl_marks_sitemap_entry_count_truncation() -> None:
+    sitemap = b"<urlset>" + (b"<url/>" * 10_001) + b"</urlset>"
+    transport = FakeTransport(
+        (
+            response(200, body=b"Sitemap: https://example.com/sitemap.xml"),
+            response(200, headers={"content-type": "text/html"}),
+            response(
+                200,
+                headers={"content-type": "application/xml"},
+                body=sitemap,
+            ),
+        )
+    )
+
+    result = HomepageCrawler(FakeAddressResolver(), transport).crawl(
+        "https",
+        "example.com",
+    )
+
+    assert result.sitemap_evidence is not None
+    assert result.sitemap_evidence[0].truncated is True
+    assert result.sitemap_evidence[0].rejected_count == 10_000
+
+
+def test_crawl_counts_invalid_and_duplicate_canonical_links() -> None:
+    transport = FakeTransport(
+        (
+            response(404),
+            response(
+                200,
+                headers={"content-type": "text/html"},
+                body=(
+                    b'<link rel="canonical" href="javascript:alert(1)">'
+                    b'<link rel="canonical" href="https://example.net/page">'
+                ),
+            ),
+        )
+    )
+
+    result = HomepageCrawler(FakeAddressResolver(), transport).crawl(
+        "https",
+        "example.com",
+    )
+
+    assert result.canonical_url is None
+    assert result.canonical_link_count == 2
+
+
+def test_crawl_caps_extracted_meta_description_length() -> None:
+    html = f'<meta name="description" content="{"x" * 1100}">'.encode()
+    transport = FakeTransport(
+        (
+            response(404),
+            response(
+                200,
+                headers={"content-type": "text/html"},
+                body=html,
+            ),
+        )
+    )
+
+    result = HomepageCrawler(FakeAddressResolver(), transport).crawl(
+        "https",
+        "example.com",
+    )
+
+    assert result.meta_description == "x" * 1000
+
+
+def test_crawl_does_not_parse_seo_metadata_from_non_html_responses() -> None:
+    transport = FakeTransport(
+        (
+            response(404),
+            response(
+                200,
+                headers={"content-type": "application/json"},
+                body=b'{"title": "not HTML"}',
+            ),
+        )
+    )
+
+    result = HomepageCrawler(FakeAddressResolver(), transport).crawl(
+        "https",
+        "example.com",
+    )
+
+    assert result.title is None
+    assert result.meta_description is None
+    assert result.h1_count is None
+    assert result.meta_robots_noindex is None
+    assert result.canonical_link_count is None
 
 
 def test_crawl_revalidates_same_host_redirect_and_rejects_external_redirect() -> None:

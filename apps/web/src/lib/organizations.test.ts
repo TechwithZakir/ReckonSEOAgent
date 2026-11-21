@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   createOrganization,
   getOrganizationContext,
+  listOrganizationMembers,
+  listOrganizations,
   OrganizationApiError,
 } from './organizations'
 
@@ -82,5 +84,49 @@ describe('organization API client', () => {
     await expect(
       getOrganizationContext('opaque-access-token', 'org-id', fetcher),
     ).resolves.toMatchObject({ role: 'viewer' })
+  })
+
+  it('loads a typed organization page and sends the continuation cursor', async () => {
+    const id = 'bca7dcf3-908e-4dcf-a985-5cc68f2355ea'
+    const fetcher = vi.fn<typeof fetch>(async () =>
+      new Response(JSON.stringify({
+        items: [{ organization_id: id, name: 'Example org', role: 'owner' }],
+        next_cursor: null,
+      }), { status: 200 }),
+    )
+    await expect(listOrganizations('token', id, fetcher)).resolves.toEqual({
+      items: [{ organization_id: id, name: 'Example org', role: 'owner' }],
+      next_cursor: null,
+    })
+    expect(fetcher).toHaveBeenCalledWith(
+      `/api/v1/organizations?after=${id}`,
+      { headers: { Authorization: 'Bearer token' }, cache: 'no-store' },
+    )
+  })
+
+  it('rejects invalid organization pages rather than presenting them as empty', async () => {
+    const fetcher: typeof fetch = async () =>
+      new Response(JSON.stringify({ items: [], next_cursor: 'not-a-uuid' }), { status: 200 })
+    await expect(listOrganizations('token', null, fetcher))
+      .rejects.toThrow('invalid organization list')
+  })
+
+  it('loads a tenant member page and rejects malformed member roles', async () => {
+    const id = 'bca7dcf3-908e-4dcf-a985-5cc68f2355ea'
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        items: [{ user_id: id, email: null, role: 'owner' }], next_cursor: null,
+      })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        items: [{ user_id: id, email: null, role: 'superuser' }], next_cursor: null,
+      })))
+    await expect(listOrganizationMembers('token', id, null, fetcher)).resolves.toEqual({
+      items: [{ user_id: id, email: null, role: 'owner' }], next_cursor: null,
+    })
+    expect(fetcher).toHaveBeenCalledWith(
+      `/api/v1/organizations/${id}/members`,
+      { headers: { Authorization: 'Bearer token' }, cache: 'no-store' },
+    )
+    await expect(listOrganizationMembers('token', id, null, fetcher)).rejects.toThrow('invalid member list')
   })
 })

@@ -1,8 +1,11 @@
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from uuid import uuid4
 
 from fastapi import FastAPI
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from reckon_api.routers.crawls import router as crawls_router
 from starlette.middleware.base import RequestResponseEndpoint
@@ -14,10 +17,16 @@ from sqlalchemy.exc import InterfaceError, OperationalError
 from sqlalchemy.orm import sessionmaker
 
 from reckon_api.config import Settings
+from reckon_api.native_mail import SmtpVerificationMailer
 from reckon_api.routers.health import router as health_router
 from reckon_api.routers.organizations import router as organizations_router
+from reckon_api.routers.model_settings import router as model_settings_router
+from reckon_api.routers.native_auth import router as native_auth_router
+from reckon_api.routers.platform import router as platform_router
+from reckon_api.routers.organization_management import router as organization_management_router
 from reckon_api.routers.websites import router as websites_router
 from reckon_core.crawler import HomepageCrawler
+from reckon_core.crawl_security import PublicDnsAddressResolver
 from reckon_core.oidc import OidcTokenVerifier
 
 
@@ -62,6 +71,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.session_factory = session_factory
     app.state.token_verifier = token_verifier
     app.state.homepage_crawler = HomepageCrawler()
+    app.state.model_test_slots = asyncio.Semaphore(2)
+    app.state.model_test_resolver = PublicDnsAddressResolver(timeout_seconds=2.0)
+    app.state.model_test_transport = None
+    app.state.verification_mailer = (
+        SmtpVerificationMailer(app_settings)
+        if app_settings.smtp_host and app_settings.smtp_from and app_settings.web_public_origin
+        else None
+    )
 
     @app.middleware("http")
     async def attach_request_id(
@@ -72,7 +89,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request.state.request_id = request_id
         response = await call_next(request)
         response.headers["X-Request-ID"] = str(request_id)
+        path = request.url.path
+        if (
+            ("/ai-settings" in path and path.startswith("/api/v1/organizations/"))
+            or path.startswith("/api/v1/auth/")
+            or path.startswith("/api/v1/invitations")
+            or (path.startswith("/api/v1/organizations/") and "/changes" in path)
+        ):
+            response.headers["Cache-Control"] = "no-store"
         return response
+
+    @app.exception_handler(RequestValidationError)
+    async def handle_request_validation_error(
+        request: Request, error: RequestValidationError
+    ) -> Response:
+        route = request.scope.get("route")
+        name = getattr(route, "name", "")
+        if name == "put_model_settings":
+            return JSONResponse(status_code=422, content={"detail": "Invalid AI settings."})
+        if name.startswith("native_"):
+            return JSONResponse(status_code=422, content={"detail": "Invalid authentication request."})
+        return await request_validation_exception_handler(request, error)
 
     @app.exception_handler(OperationalError)
     async def handle_database_operational_error(
@@ -98,6 +135,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(organizations_router)
     app.include_router(websites_router)
     app.include_router(crawls_router)
+    app.include_router(model_settings_router)
+    app.include_router(native_auth_router)
+    app.include_router(platform_router)
+    app.include_router(organization_management_router)
     return app
 
 

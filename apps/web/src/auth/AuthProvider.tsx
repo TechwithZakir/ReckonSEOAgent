@@ -9,6 +9,8 @@ import type { ReactNode } from 'react'
 import type { User } from 'oidc-client-ts'
 import { AuthContext } from './AuthContext'
 import type { AuthStatus } from './AuthContext'
+import { NativeAuthError, signOutNative } from '../lib/native-auth'
+import type { NativeSession } from '../lib/native-auth'
 import {
   createOidcUserManager,
   resolveOidcConfig,
@@ -30,11 +32,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [config],
   )
   const [user, setUser] = useState<User | null>(null)
+  const [nativeSession, setNativeSession] = useState<NativeSession | null>(null)
   const [status, setStatus] = useState<AuthStatus>(
     config.kind === 'configured' ? 'initializing' : 'unconfigured',
   )
   const [error, setError] = useState<string | null>(null)
   const initializationRef = useRef<Promise<User | null> | null>(null)
+  const sessionId = useMemo(
+    () => user || nativeSession ? crypto.randomUUID() : null,
+    [user, nativeSession],
+  )
 
   useEffect(() => {
     if (!manager) {
@@ -106,7 +113,38 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [manager])
 
+  const acceptNativeSession = useCallback((session: NativeSession) => {
+    setUser(null)
+    setNativeSession(session)
+    setStatus('signed-in')
+    setError(null)
+  }, [])
+
+  useEffect(() => {
+    if (!nativeSession) return
+    const timer = window.setTimeout(() => {
+      setNativeSession(null)
+      setStatus(manager ? 'signed-out' : 'unconfigured')
+      setError('Your session expired. Please sign in again.')
+    }, nativeSession.expires_in * 1000)
+    return () => window.clearTimeout(timer)
+  }, [nativeSession, manager])
+
   const signOut = useCallback(async () => {
+    if (nativeSession) {
+      setError(null)
+      try {
+        await signOutNative(nativeSession.access_token)
+      } catch (cause) {
+        if (!(cause instanceof NativeAuthError && cause.status === 401)) {
+          setError('Sign-out could not be completed. Please try again.')
+          return
+        }
+      }
+      setNativeSession(null)
+      setStatus(manager ? 'signed-out' : 'unconfigured')
+      return
+    }
     if (!manager) {
       return
     }
@@ -116,11 +154,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch {
       setError('Sign-out could not be completed. Try again or end the provider session directly.')
     }
-  }, [manager])
+  }, [manager, nativeSession])
 
   const value = useMemo(
-    () => ({ config, status, user, error, signIn, signOut }),
-    [config, status, user, error, signIn, signOut],
+    () => ({
+      config, status,
+      user: nativeSession
+        ? { access_token: nativeSession.access_token, profile: { sub: nativeSession.user_id, iss: 'reckon-native' } }
+        : user,
+      sessionId, error, signIn, signOut, acceptNativeSession,
+    }),
+    [config, status, user, nativeSession, sessionId, error, signIn, signOut, acceptNativeSession],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

@@ -1,4 +1,5 @@
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -12,6 +13,16 @@ class Settings(BaseSettings):
     oidc_audience: str | None = None
     oidc_jwks_url: str | None = None
     crawl_daily_limit: int = Field(default=10, ge=1)
+    ai_test_daily_token_limit: int = Field(default=10000, ge=640)
+    credential_encryption_key: SecretStr | None = None
+    native_auth_enabled: bool = False
+    smtp_host: str | None = None
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    smtp_username: str | None = None
+    smtp_password: SecretStr | None = None
+    smtp_from: str | None = None
+    smtp_tls: Literal["starttls", "implicit"] = "starttls"
+    web_public_origin: str | None = None
 
     model_config = SettingsConfigDict(
         env_prefix="RECKON_",
@@ -29,13 +40,28 @@ class Settings(BaseSettings):
         )
         if any(oidc_values) and not all(oidc_values):
             raise ValueError("OIDC issuer, audience and JWKS URL must be configured together.")
+        smtp_values = (self.smtp_host, self.smtp_from, self.web_public_origin)
+        if any(smtp_values) and not all(smtp_values):
+            raise ValueError("SMTP host, sender and web origin must be configured together.")
+        if bool(self.smtp_username) != bool(self.smtp_password and self.smtp_password.get_secret_value()):
+            raise ValueError("SMTP username and password must be configured together.")
+        if self.web_public_origin:
+            origin = urlsplit(self.web_public_origin)
+            local = origin.hostname in {"localhost", "127.0.0.1", "::1"}
+            if (
+                not origin.hostname or origin.username or origin.password or origin.query
+                or origin.fragment or origin.path not in ("", "/")
+                or (origin.scheme != "https" and not (
+                    self.environment in {"local", "test"} and local and origin.scheme == "http"
+                ))
+            ):
+                raise ValueError("The public web origin must be HTTPS outside local development.")
         if self.environment == "production" and (
             self.database_url is None
-            or self.oidc_issuer is None
-            or self.oidc_audience is None
-            or self.oidc_jwks_url is None
+            or (not self.native_auth_enabled and self.oidc_issuer is None)
+            or (self.native_auth_enabled and not all(smtp_values))
         ):
             raise ValueError(
-                "Production requires database and OIDC configuration."
+                "Production requires a database and configured OIDC or native authentication."
             )
         return self

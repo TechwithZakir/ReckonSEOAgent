@@ -3,7 +3,7 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from reckon_api.dependencies import (
@@ -15,6 +15,8 @@ from reckon_core.crawler import (
     CrawlDisallowed,
     CrawlPolicyError,
     CrawlUnavailable,
+    SitemapDocumentType,
+    SitemapFetchStatus,
 )
 from reckon_core.persistence import CrawlRun
 from reckon_core.repositories import (
@@ -23,6 +25,13 @@ from reckon_core.repositories import (
     SqlAlchemyCrawlRepository,
     WebsiteNotFound,
     WebsiteNotVerified,
+)
+from reckon_core.seo_audit import (
+    FindingConfidence,
+    FindingEffort,
+    FindingImpact,
+    HomepageFindingCode,
+    audit_homepage,
 )
 from reckon_core.tenancy import (
     AuthenticatedPrincipal,
@@ -33,6 +42,32 @@ router = APIRouter(
     prefix="/api/v1/organizations/{organization_id}/websites",
     tags=["crawls"],
 )
+
+
+class CrawlFindingResponse(BaseModel):
+    code: HomepageFindingCode
+    impact: FindingImpact
+    confidence: FindingConfidence
+    effort: FindingEffort
+    source_url: str
+    summary: str
+    evidence: str
+    recommendation: str
+    verification: str
+
+
+class SitemapEvidenceResponse(BaseModel):
+    url: str
+    status: SitemapFetchStatus
+    http_status_code: int | None
+    document_type: SitemapDocumentType | None
+    url_count: int | None
+    homepage_listed: bool | None = None
+    canonical_url_listed: bool | None = None
+    child_sitemap_count: int | None
+    child_sitemap_urls: list[str] = Field(default_factory=list)
+    rejected_count: int | None
+    truncated: bool
 
 
 class CrawlResponse(BaseModel):
@@ -46,7 +81,22 @@ class CrawlResponse(BaseModel):
     content_type: str | None
     bytes_read: int | None
     title: str | None
+    audit_version: str | None
+    findings: list[CrawlFindingResponse] | None
+    meta_description: str | None
+    h1_count: int | None
+    meta_robots_noindex: bool | None
+    x_robots_noindex: bool | None
+    canonical_url: str | None
+    canonical_link_count: int | None
+    robots_status_code: int | None
+    sitemap_urls: list[str] | None
+    sitemap_evidence: list[SitemapEvidenceResponse] | None
+    sitemap_declaration_count: int | None
+    sitemap_rejected_count: int | None
+    sitemap_discovery_truncated: bool | None
     redirect_count: int | None
+    error_code: str | None
 
 
 def _crawl_response(run: CrawlRun) -> CrawlResponse:
@@ -73,7 +123,22 @@ def _crawl_response(run: CrawlRun) -> CrawlResponse:
         content_type=run.content_type,
         bytes_read=run.bytes_read,
         title=run.title,
+        audit_version=run.audit_version,
+        findings=run.audit_findings,
+        meta_description=run.meta_description,
+        h1_count=run.h1_count,
+        meta_robots_noindex=run.meta_robots_noindex,
+        x_robots_noindex=run.x_robots_noindex,
+        canonical_url=run.canonical_url,
+        canonical_link_count=run.canonical_link_count,
+        robots_status_code=run.robots_status_code,
+        sitemap_urls=run.sitemap_urls,
+        sitemap_evidence=run.sitemap_evidence,
+        sitemap_declaration_count=run.sitemap_declaration_count,
+        sitemap_rejected_count=run.sitemap_rejected_count,
+        sitemap_discovery_truncated=run.sitemap_discovery_truncated,
         redirect_count=run.redirect_count,
+        error_code=run.error_code,
     )
 
 
@@ -159,6 +224,7 @@ def crawl_website(
             detail="Idempotency key was already used for a different crawl.",
         ) from error
     except CrawlBudgetExceeded as error:
+        session.commit()
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="The organization has reached its daily crawl limit.",
@@ -224,6 +290,7 @@ def crawl_website(
         http_request.state.request_id,
         status="completed",
         result=result,
+        audit=audit_homepage(result),
     )
     session.commit()
     return _crawl_response(run)

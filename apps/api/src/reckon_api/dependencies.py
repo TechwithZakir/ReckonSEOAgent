@@ -9,6 +9,7 @@ from reckon_core.oidc import (
     InvalidBearerToken,
     OidcTokenVerifier,
 )
+from reckon_core.native_auth import NativeAuthRepository, is_native_token
 from reckon_core.repositories import SqlAlchemyIdentityRepository
 from reckon_core.tenancy import AuthenticatedPrincipal
 
@@ -33,6 +34,17 @@ def get_authenticated_principal(
     session: Session = Depends(get_database_session),
 ) -> AuthenticatedPrincipal:
     if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Valid bearer authentication is required.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if is_native_token(credentials.credentials):
+        if request.app.state.settings.native_auth_enabled:
+            principal = NativeAuthRepository(session).authenticate(credentials.credentials)
+            if principal is not None:
+                return principal
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Valid bearer authentication is required.",

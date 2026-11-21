@@ -1,7 +1,10 @@
 import argparse
+import getpass
 import sys
+import warnings
 from pathlib import Path
 from typing import Sequence
+from uuid import uuid4
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -11,6 +14,9 @@ from reckon_core.oidc import (
     IdentityProviderUnavailable,
     InvalidBearerToken,
     OidcTokenVerifier,
+)
+from reckon_core.native_auth import (
+    BootstrapConflict, NativeAuthBusy, NativeAuthRepository, normalize_email, valid_password,
 )
 from reckon_core.repositories import SqlAlchemyIdentityProvisioningRepository
 
@@ -43,7 +49,56 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Path to a local file containing a short-lived API access token.",
     )
+    bootstrap = commands.add_parser(
+        "bootstrap-admin",
+        help="Create the initial local platform administrator using a private password prompt.",
+    )
+    bootstrap.add_argument("--email", required=True, help="Administrator email address.")
     return parser
+
+
+def bootstrap_admin(email: str, settings: Settings) -> int:
+    if settings.environment != "local":
+        print("Administrator bootstrap is available only in the local environment.", file=sys.stderr)
+        return 1
+    if not sys.stdin.isatty():
+        print("Administrator bootstrap requires an interactive terminal.", file=sys.stderr)
+        return 1
+    try:
+        normalized = normalize_email(email)
+    except ValueError:
+        print("The administrator email address is invalid.", file=sys.stderr)
+        return 1
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", getpass.GetPassWarning)
+            password = getpass.getpass("Administrator password: ")
+            confirmation = getpass.getpass("Confirm password: ")
+    except (EOFError, KeyboardInterrupt, OSError, getpass.GetPassWarning):
+        print("\nAdministrator bootstrap was cancelled or secure input is unavailable.", file=sys.stderr)
+        return 1
+    if password != confirmation or not valid_password(password):
+        print("Passwords must match and contain 12 to 128 characters.", file=sys.stderr)
+        return 1
+    if settings.database_url is None:
+        print("RECKON_DATABASE_URL must be configured.", file=sys.stderr)
+        return 1
+    engine = create_engine(settings.database_url.get_secret_value(), pool_pre_ping=True)
+    session_factory = sessionmaker(engine, expire_on_commit=False)
+    try:
+        with session_factory.begin() as session:
+            user_id = NativeAuthRepository(session).bootstrap_platform_administrator(
+                normalized, password, uuid4()
+            )
+    except (BootstrapConflict, NativeAuthBusy) as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    finally:
+        engine.dispose()
+    print(f"Created the initial platform administrator {user_id}.")
+    if not settings.native_auth_enabled:
+        print("Native authentication is disabled; enable it before signing in.")
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -53,6 +108,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if settings.database_url is None:
         parser.error("RECKON_DATABASE_URL must be configured.")
+    if arguments.command == "bootstrap-admin":
+        return bootstrap_admin(arguments.email, settings)
     if (
         settings.oidc_issuer is None
         or settings.oidc_audience is None

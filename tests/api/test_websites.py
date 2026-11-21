@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Iterator
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 import httpx
@@ -12,7 +13,13 @@ from sqlalchemy.pool import StaticPool
 from reckon_api.config import Settings
 from reckon_api.dependencies import get_database_session
 from reckon_api.main import create_app
-from reckon_core.crawler import CrawlDisallowed, CrawlResult, CrawlUnavailable
+from reckon_api.routers.crawls import SitemapEvidenceResponse
+from reckon_core.crawler import (
+    CrawlDisallowed,
+    CrawlResult,
+    CrawlUnavailable,
+    SitemapEvidence,
+)
 from reckon_core.dns import DnsTxtLookupUnavailable
 from reckon_core.oidc import InvalidBearerToken
 from reckon_core.persistence import (
@@ -26,6 +33,7 @@ from reckon_core.persistence import (
     Website,
     WebsiteCreationRequest,
 )
+from reckon_core.repositories import SqlAlchemyCrawlRepository, utc_day
 from reckon_core.tenancy import OrganizationRole
 from reckon_core.websites import website_verification_record_value
 
@@ -67,6 +75,23 @@ class StaticHomepageCrawler:
         if isinstance(self.outcome, Exception):
             raise self.outcome
         return self.outcome
+
+
+def test_sitemap_evidence_response_defaults_membership_for_older_history() -> None:
+    evidence = SitemapEvidenceResponse(
+        url="https://example.com/sitemap.xml",
+        status="fetched",
+        http_status_code=200,
+        document_type="urlset",
+        url_count=5,
+        child_sitemap_count=None,
+        rejected_count=0,
+        truncated=False,
+    )
+
+    assert evidence.homepage_listed is None
+    assert evidence.canonical_url_listed is None
+    assert evidence.child_sitemap_urls == []
 
 
 @pytest.fixture
@@ -414,6 +439,36 @@ def test_member_crawl_is_persisted_audited_and_idempotent(
             bytes_read=18,
             title="Homepage",
             redirect_count=0,
+            meta_description="A useful homepage summary.",
+            h1_count=2,
+            robots_status_code=200,
+            sitemap_urls=("https://crawl.example.com/sitemap.xml",),
+            sitemap_evidence=(
+                SitemapEvidence(
+                    url="https://crawl.example.com/sitemap.xml",
+                    status="fetched",
+                    http_status_code=200,
+                    document_type="sitemapindex",
+                    child_sitemap_count=1,
+                    child_sitemap_urls=(
+                        "https://crawl.example.com/sitemap-child.xml",
+                    ),
+                    rejected_count=0,
+                ),
+                SitemapEvidence(
+                    url="https://crawl.example.com/sitemap-child.xml",
+                    status="fetched",
+                    http_status_code=200,
+                    document_type="urlset",
+                    url_count=3,
+                    homepage_listed=True,
+                    canonical_url_listed=False,
+                    rejected_count=0,
+                ),
+            ),
+            sitemap_declaration_count=1,
+            sitemap_rejected_count=0,
+            sitemap_discovery_truncated=False,
         )
     )
     app.state.homepage_crawler = crawler
@@ -463,6 +518,43 @@ def test_member_crawl_is_persisted_audited_and_idempotent(
     assert first.status_code == 200
     assert first.json()["status"] == "completed"
     assert first.json()["title"] == "Homepage"
+    assert first.json()["meta_description"] == "A useful homepage summary."
+    assert first.json()["h1_count"] == 2
+    assert first.json()["audit_version"] == "homepage-v4"
+    assert first.json()["findings"] == []
+    assert first.json()["robots_status_code"] == 200
+    assert first.json()["sitemap_urls"] == ["https://crawl.example.com/sitemap.xml"]
+    assert first.json()["sitemap_evidence"] == [
+        {
+            "url": "https://crawl.example.com/sitemap.xml",
+            "status": "fetched",
+            "http_status_code": 200,
+            "document_type": "sitemapindex",
+            "url_count": None,
+            "homepage_listed": None,
+            "canonical_url_listed": None,
+            "child_sitemap_count": 1,
+            "child_sitemap_urls": ["https://crawl.example.com/sitemap-child.xml"],
+            "rejected_count": 0,
+            "truncated": False,
+        },
+        {
+            "url": "https://crawl.example.com/sitemap-child.xml",
+            "status": "fetched",
+            "http_status_code": 200,
+            "document_type": "urlset",
+            "url_count": 3,
+            "homepage_listed": True,
+            "canonical_url_listed": False,
+            "child_sitemap_count": None,
+            "child_sitemap_urls": [],
+            "rejected_count": 0,
+            "truncated": False,
+        },
+    ]
+    assert first.json()["sitemap_declaration_count"] == 1
+    assert first.json()["sitemap_rejected_count"] == 0
+    assert first.json()["sitemap_discovery_truncated"] is False
     assert replay.status_code == 200
     assert replay.json() == first.json()
     assert conflicting_replay.status_code == 409
@@ -472,10 +564,261 @@ def test_member_crawl_is_persisted_audited_and_idempotent(
         assert run is not None
         assert run.status == "completed"
         assert run.bytes_read == 18
+        assert run.meta_description == "A useful homepage summary."
+        assert run.h1_count == 2
+        assert run.audit_version == "homepage-v4"
+        assert run.audit_findings == []
+        assert run.robots_status_code == 200
+        assert run.sitemap_urls == ["https://crawl.example.com/sitemap.xml"]
+        assert run.sitemap_evidence == [
+            {
+                "url": "https://crawl.example.com/sitemap.xml",
+                "status": "fetched",
+                "http_status_code": 200,
+                "document_type": "sitemapindex",
+                "url_count": None,
+                "homepage_listed": None,
+                "canonical_url_listed": None,
+                "child_sitemap_count": 1,
+                "child_sitemap_urls": ["https://crawl.example.com/sitemap-child.xml"],
+                "rejected_count": 0,
+                "truncated": False,
+            },
+            {
+                "url": "https://crawl.example.com/sitemap-child.xml",
+                "status": "fetched",
+                "http_status_code": 200,
+                "document_type": "urlset",
+                "url_count": 3,
+                "homepage_listed": True,
+                "canonical_url_listed": False,
+                "child_sitemap_count": None,
+                "child_sitemap_urls": [],
+                "rejected_count": 0,
+                "truncated": False,
+            },
+        ]
+        assert run.sitemap_declaration_count == 1
+        assert run.sitemap_rejected_count == 0
+        assert run.sitemap_discovery_truncated is False
         actions = session.scalars(
             select(AuditEvent.action).where(AuditEvent.resource_id == run.id)
         ).all()
         assert set(actions) == {"crawl.started", "crawl.completed"}
+
+
+def test_crawl_audit_findings_are_stored_and_replayed_from_history(
+    website_api: tuple[FastAPI, sessionmaker[Session], UUID],
+) -> None:
+    app, factory, organization_id = website_api
+    website_id = register_verified_website(app, factory, organization_id)
+    app.state.homepage_crawler = StaticHomepageCrawler(
+        CrawlResult(
+            final_url="https://crawl.example.com/",
+            status_code=404,
+            content_type="text/html",
+            bytes_read=0,
+            title=None,
+            redirect_count=0,
+            meta_description=None,
+            h1_count=0,
+            meta_robots_noindex=True,
+            x_robots_noindex=False,
+            canonical_url="https://other.example.net/preferred",
+            canonical_link_count=2,
+        )
+    )
+    path = (
+        f"/api/v1/organizations/{organization_id}/websites/"
+        f"{website_id}/crawl"
+    )
+    first = asyncio.run(
+        website_request(
+            app,
+            "POST",
+            path,
+            idempotency_key="crawl-audit-001",
+        )
+    )
+    history = asyncio.run(
+        website_request(
+            app,
+            "GET",
+            (
+                f"/api/v1/organizations/{organization_id}/websites/"
+                f"{website_id}/crawls"
+            ),
+        )
+    )
+
+    expected_codes = [
+        "noindex_directive",
+        "non_success_http_status",
+        "cross_host_canonical",
+        "missing_title",
+        "missing_h1",
+        "missing_meta_description",
+        "multiple_canonical_links",
+    ]
+    assert first.status_code == 200
+    assert first.json()["audit_version"] == "homepage-v4"
+    assert [item["code"] for item in first.json()["findings"]] == expected_codes
+    assert first.json()["meta_robots_noindex"] is True
+    assert first.json()["x_robots_noindex"] is False
+    assert first.json()["canonical_url"] == "https://other.example.net/preferred"
+    assert first.json()["canonical_link_count"] == 2
+    assert all(
+        item["source_url"] == "https://crawl.example.com/"
+        for item in first.json()["findings"]
+    )
+    assert history.status_code == 200
+    assert history.json()[0]["audit_version"] == "homepage-v4"
+    assert history.json()[0]["findings"] == first.json()["findings"]
+    with factory() as session:
+        run = session.get(CrawlRun, UUID(first.json()["crawl_id"]))
+        assert run is not None
+        assert run.audit_version == "homepage-v4"
+        assert [finding["code"] for finding in run.audit_findings or []] == expected_codes
+        assert run.meta_robots_noindex is True
+        assert run.x_robots_noindex is False
+        assert run.canonical_url == "https://other.example.net/preferred"
+        assert run.canonical_link_count == 2
+
+
+def test_stale_crawl_is_recovered_but_recent_run_remains_in_progress(
+    website_api: tuple[FastAPI, sessionmaker[Session], UUID],
+) -> None:
+    app, factory, organization_id = website_api
+    website_id = register_verified_website(app, factory, organization_id)
+    with factory() as session:
+        actor_user_id = session.scalar(
+            select(ExternalIdentity.user_id).where(
+                ExternalIdentity.subject == "owner-subject"
+            )
+        )
+        assert actor_user_id is not None
+        repository = SqlAlchemyCrawlRepository(session)
+        _, recent_run, _ = repository.reserve(
+            organization_id,
+            website_id,
+            actor_user_id,
+            uuid4(),
+            "crawl-recent-running-001",
+            daily_limit=10,
+        )
+        session.commit()
+        _, stale_run, _ = repository.reserve(
+            organization_id,
+            website_id,
+            actor_user_id,
+            uuid4(),
+            "crawl-stale-running-001",
+            daily_limit=10,
+        )
+        stale_run.started_at = datetime.now(timezone.utc) - timedelta(minutes=6)
+        session.commit()
+        recent_id = recent_run.id
+        stale_id = stale_run.id
+
+    crawler = StaticHomepageCrawler(
+        CrawlResult(
+            final_url="https://crawl.example.com/",
+            status_code=200,
+            content_type="text/html",
+            bytes_read=0,
+            title=None,
+            redirect_count=0,
+        )
+    )
+    app.state.homepage_crawler = crawler
+    base_path = (
+        f"/api/v1/organizations/{organization_id}/websites/{website_id}"
+    )
+    stale_retry = asyncio.run(
+        website_request(
+            app,
+            "POST",
+            f"{base_path}/crawl",
+            idempotency_key="crawl-stale-running-001",
+        )
+    )
+    recent_retry = asyncio.run(
+        website_request(
+            app,
+            "POST",
+            f"{base_path}/crawl",
+            idempotency_key="crawl-recent-running-001",
+        )
+    )
+    history = asyncio.run(
+        website_request(app, "GET", f"{base_path}/crawls")
+    )
+
+    assert stale_retry.status_code == recent_retry.status_code == 409
+    assert "already in progress" in recent_retry.json()["detail"]
+    assert history.status_code == 200
+    runs_by_id = {item["crawl_id"]: item for item in history.json()}
+    assert runs_by_id[str(stale_id)]["status"] == "failed"
+    assert runs_by_id[str(stale_id)]["error_code"] == "worker_interrupted"
+    assert runs_by_id[str(stale_id)]["completed_at"] is not None
+    assert runs_by_id[str(recent_id)]["status"] == "running"
+    assert runs_by_id[str(recent_id)]["completed_at"] is None
+    assert crawler.calls == []
+    with factory() as session:
+        actions = session.scalars(
+            select(AuditEvent.action).where(AuditEvent.resource_id == stale_id)
+        ).all()
+        assert "crawl.recovered" in actions
+
+
+def test_stale_crawl_recovery_is_committed_when_new_reservation_is_over_budget(
+    website_api: tuple[FastAPI, sessionmaker[Session], UUID],
+) -> None:
+    app, factory, organization_id = website_api
+    app.state.settings = Settings(
+        _env_file=None,
+        environment="test",
+        crawl_daily_limit=1,
+    )
+    website_id = register_verified_website(app, factory, organization_id)
+    with factory() as session:
+        actor_user_id = session.scalar(
+            select(ExternalIdentity.user_id).where(
+                ExternalIdentity.subject == "owner-subject"
+            )
+        )
+        assert actor_user_id is not None
+        _, stale_run, _ = SqlAlchemyCrawlRepository(session).reserve(
+            organization_id,
+            website_id,
+            actor_user_id,
+            uuid4(),
+            "crawl-stale-budget-001",
+            daily_limit=1,
+        )
+        stale_run.started_at = datetime.now(timezone.utc) - timedelta(minutes=6)
+        session.commit()
+        stale_id = stale_run.id
+
+    over_budget = asyncio.run(
+        website_request(
+            app,
+            "POST",
+            (
+                f"/api/v1/organizations/{organization_id}/websites/"
+                f"{website_id}/crawl"
+            ),
+            idempotency_key="crawl-stale-budget-002",
+        )
+    )
+
+    assert over_budget.status_code == 429
+    with factory() as session:
+        recovered = session.get(CrawlRun, stale_id)
+        assert recovered is not None
+        assert recovered.status == "failed"
+        assert recovered.error_code == "worker_interrupted"
+        assert recovered.completed_at is not None
 
 
 def test_member_can_list_paginated_crawl_history_for_own_website(
@@ -634,6 +977,91 @@ def test_failed_crawl_consumes_the_organization_daily_budget(
         assert run.status == "failed"
         assert run.error_code == "crawl_unavailable"
         assert session.scalar(select(func.count(CrawlRun.id))) == 1
+
+
+def test_crawl_usage_counts_reservations_in_utc_and_is_tenant_scoped(
+    website_api: tuple[FastAPI, sessionmaker[Session], UUID],
+) -> None:
+    app, factory, organization_id = website_api
+    app.state.settings = Settings(
+        _env_file=None, environment="test", crawl_daily_limit=1
+    )
+    website_id = register_verified_website(app, factory, organization_id)
+    app.state.homepage_crawler = StaticHomepageCrawler(CrawlUnavailable("offline"))
+    crawl_path = f"/api/v1/organizations/{organization_id}/websites/{website_id}/crawl"
+    usage_path = f"/api/v1/organizations/{organization_id}/crawl-usage"
+
+    failed = asyncio.run(
+        website_request(app, "POST", crawl_path, idempotency_key="usage-test-001")
+    )
+    rejected = asyncio.run(
+        website_request(app, "POST", crawl_path, idempotency_key="usage-test-002")
+    )
+    usage = asyncio.run(website_request(app, "GET", usage_path, token="editor-token"))
+    assert failed.status_code == 503
+    assert rejected.status_code == 429
+    assert usage.status_code == 200
+    assert usage.headers["cache-control"] == "no-store"
+    payload = usage.json()
+    assert (payload["used"], payload["limit"], payload["remaining"]) == (1, 1, 0)
+    start = datetime.fromisoformat(payload["period_start"])
+    end = datetime.fromisoformat(payload["period_end"])
+    assert start.utcoffset() == timedelta(0)
+    assert (start.hour, start.minute, start.second, start.microsecond) == (0, 0, 0, 0)
+    assert end - start == timedelta(days=1)
+
+    with factory() as session:
+        owner_id = session.scalar(
+            select(ExternalIdentity.user_id).where(
+                ExternalIdentity.subject == "owner-subject"
+            )
+        )
+        other = Organization(name="Other tenant")
+        session.add(other)
+        session.flush()
+        other_id = other.id
+        session.add(
+            OrganizationMembership(
+                organization_id=other_id,
+                user_id=owner_id,
+                role=OrganizationRole.OWNER,
+                is_active=True,
+            )
+        )
+        session.commit()
+
+    other_usage = asyncio.run(
+        website_request(app, "GET", f"/api/v1/organizations/{other_id}/crawl-usage")
+    )
+    denied = asyncio.run(
+        website_request(
+            app, "GET", f"/api/v1/organizations/{other_id}/crawl-usage", token="editor-token"
+        )
+    )
+    unauthenticated = asyncio.run(
+        website_request(app, "GET", usage_path, token="invalid-token")
+    )
+    assert other_usage.status_code == 200
+    assert other_usage.json()["used"] == 0
+    assert denied.status_code == 404
+    assert unauthenticated.status_code == 401
+
+    with factory() as session:
+        run = session.scalar(select(CrawlRun))
+        assert run is not None
+        run.started_at = start - timedelta(microseconds=1)
+        session.commit()
+    assert asyncio.run(website_request(app, "GET", usage_path)).json()["used"] == 0
+
+
+def test_utc_day_uses_utc_boundaries() -> None:
+    instant = datetime(2026, 1, 2, 1, tzinfo=timezone(timedelta(hours=6)))
+    assert utc_day(instant) == (
+        datetime(2026, 1, 1, tzinfo=timezone.utc),
+        datetime(2026, 1, 2, tzinfo=timezone.utc),
+    )
+    with pytest.raises(ValueError, match="timezone-aware"):
+        utc_day(datetime(2026, 1, 1))
 
 
 def test_disallowed_crawl_is_audited_and_idempotently_replayed(

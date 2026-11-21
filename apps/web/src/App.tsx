@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode, SVGProps } from 'react'
 import { useAuth } from './auth/AuthContext'
+import { CrawlWorkflow } from './components/CrawlWorkflow'
+import { AIModelSettings } from './components/AIModelSettings'
+import { LoginPage } from './components/LoginPage'
+import { InvitationsPage } from './components/InvitationsPage'
+import { PlatformAccess } from './components/PlatformAccess'
+import { OperationsOverview } from './components/OperationsOverview'
+import { OrganizationMembers } from './components/OrganizationMembers'
 import { WorkspaceSetup } from './components/WorkspaceSetup'
 import { WebsiteOnboarding } from './components/WebsiteOnboarding'
 import type { OrganizationContext } from './lib/organizations'
@@ -117,8 +124,9 @@ const navigationGroups: { label: string; items: NavigationItem[] }[] = [
     label: 'Workspace',
     items: [
       { label: 'Overview', icon: 'grid', available: true },
-      { label: 'Websites', icon: 'globe', available: false },
+      { label: 'Websites', icon: 'globe', available: true },
       { label: 'Technical audits', icon: 'audit', available: false },
+      { label: 'System settings', icon: 'spark', available: true },
     ],
   },
   {
@@ -176,17 +184,37 @@ function HealthRow({
 }
 
 function App() {
+  const [path, setPath] = useState(() => window.location.pathname)
+  useEffect(() => {
+    const handlePopState = () => setPath(window.location.pathname)
+    window.addEventListener('popstate', handlePopState)
+    return () => window.removeEventListener('popstate', handlePopState)
+  }, [])
+  const navigate = useCallback((next: string) => {
+    if (window.location.pathname !== next) window.history.pushState({}, '', next)
+    setPath(window.location.pathname)
+    window.scrollTo(0, 0)
+  }, [])
+  if (path === '/login' || path === '/auth/verify' || path === '/auth/reset') return <LoginPage onNavigate={navigate} />
+  if (path === '/invitations') return <InvitationsPage onNavigate={navigate} />
+  return <Dashboard onNavigate={navigate} />
+}
+
+function Dashboard({ onNavigate }: { onNavigate: (path: string) => void }) {
   const auth = useAuth()
   const [theme, setTheme] = useState<'light' | 'dark'>('light')
   const [health, setHealth] = useState<PlatformHealth>(initialHealth)
   const [checkedAt, setCheckedAt] = useState<Date | null>(null)
   const [refreshing, setRefreshing] = useState(false)
+  const [activeNavigation, setActiveNavigation] = useState('Overview')
   const [workspaceState, setWorkspaceState] = useState<{
     subject: string
     context: OrganizationContext
   } | null>(null)
   const requestId = useRef(0)
-  const subject = auth.user?.profile.sub ?? ''
+  const subject = auth.user
+    ? JSON.stringify([auth.user.profile.iss ?? '', auth.user.profile.sub, auth.sessionId])
+    : ''
   const workspace =
     subject && workspaceState?.subject === subject
       ? workspaceState.context
@@ -231,6 +259,44 @@ function App() {
     setTheme((currentTheme) => (currentTheme === 'light' ? 'dark' : 'light'))
   }
 
+  const handleWebsiteNavigation = () => {
+    setActiveNavigation('Websites')
+    const target =
+      document.getElementById('website-onboarding') ??
+      document.getElementById('workspace-card')
+    target?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
+  const handleOverviewNavigation = () => {
+    setActiveNavigation('Overview')
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  const handleSettingsNavigation = () => {
+    setActiveNavigation('System settings')
+    document.getElementById('ai-settings')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
+  const handleWorkflowAction = () => {
+    if (auth.status !== 'signed-in') {
+      onNavigate('/login')
+      return
+    }
+    const target = workspace
+      ? document.getElementById('website-onboarding')
+      : document.getElementById('workspace-card')
+    target?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
+  const workflowActionLabel =
+    auth.status === 'initializing'
+      ? 'Checking access…'
+      : auth.status === 'signed-in'
+        ? workspace
+          ? 'Open website workspace'
+          : 'Connect a workspace'
+        : 'Sign in to continue'
+
   return (
     <div className="app-shell" data-theme={theme}>
       <aside className="sidebar">
@@ -270,15 +336,30 @@ function App() {
               <p className="nav-group__label">{group.label}</p>
               {group.items.map((item) => (
                 <button
-                  aria-current={item.available ? 'page' : undefined}
+                  aria-current={
+                    activeNavigation === item.label
+                      ? item.label === 'Overview'
+                        ? 'page'
+                        : 'location'
+                      : undefined
+                  }
                   aria-disabled={!item.available}
-                  className={`nav-item${item.available ? ' nav-item--active' : ''}`}
+                  className={`nav-item${activeNavigation === item.label ? ' nav-item--active' : ''}`}
                   disabled={!item.available}
                   key={item.label}
                   title={
                     item.available
                       ? undefined
                       : `${item.label} is not available in this build`
+                  }
+                  onClick={
+                    item.label === 'Websites'
+                      ? handleWebsiteNavigation
+                      : item.label === 'Overview'
+                        ? handleOverviewNavigation
+                        : item.label === 'System settings'
+                          ? handleSettingsNavigation
+                        : undefined
                   }
                   type="button"
                 >
@@ -331,6 +412,12 @@ function App() {
                 Sign out
               </button>
             )}
+            {!auth.user && (
+              <a className="button button--primary" href="/login"
+                onClick={(event) => { event.preventDefault(); onNavigate('/login') }}>
+                Sign in
+              </a>
+            )}
             <button
               aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}
               className="icon-button"
@@ -350,10 +437,10 @@ function App() {
                 <span className="eyebrow__line" />
                 YOUR SEO OPERATIONS WORKSPACE
               </p>
-              <h1 id="page-title">Evidence first. Progress that lasts.</h1>
+              <h1 id="page-title">Your SEO operations, <span>in one place.</span></h1>
               <p className="page-intro__description">
-                A clear view of your platform foundations, with site evidence
-                and actions surfaced only when they are connected and verified.
+                Connect your workspace, verify your website, and turn reliable
+                crawl evidence into a clear picture of what needs attention.
               </p>
             </div>
             <a className="button button--primary" href="/docs" rel="noreferrer" target="_blank">
@@ -361,6 +448,24 @@ function App() {
               <Icon name="arrow" />
             </a>
           </section>
+
+          <OperationsOverview
+            authStatus={auth.status}
+            configKind={auth.config.kind}
+            workspaceConnected={workspace !== null}
+            health={health}
+            actionLabel={workflowActionLabel}
+            actionDisabled={auth.status === 'initializing'}
+            onAction={handleWorkflowAction}
+          />
+
+          <CrawlWorkflow
+            accountConnected={auth.status === 'signed-in'}
+            workspaceConnected={workspace !== null}
+            actionLabel={workflowActionLabel}
+            actionDisabled={auth.status === 'initializing'}
+            onAction={handleWorkflowAction}
+          />
 
           <section aria-labelledby="health-title" className="health-card">
             <div className="section-heading">
@@ -406,7 +511,17 @@ function App() {
             </div>
           </section>
 
-          <section aria-labelledby="workspace-title" className="workspace-card">
+          <AIModelSettings
+            accessToken={auth.status === 'signed-in' ? auth.user?.access_token ?? '' : ''}
+            key={workspace?.organization_id ?? 'no-workspace'}
+            organization={workspace}
+          />
+
+          <section
+            aria-labelledby="workspace-title"
+            className={`workspace-card${workspace ? ' workspace-card--connected' : ''}`}
+            id="workspace-card"
+          >
             <div className="workspace-card__art" aria-hidden="true">
               <div className="orbit orbit--outer" />
               <div className="orbit orbit--inner" />
@@ -425,67 +540,18 @@ function App() {
                   <p>Validating the current browser session.</p>
                 </>
               )}
-              {auth.config.kind === 'missing' && (
-                <>
-                  <span className="status-label status-label--muted">Sign-in setup</span>
-                  <h2 id="workspace-title">Connect an identity provider</h2>
-                  <p>
-                    Add the public OIDC authority and client ID to the root
-                    <code> .env</code>, then restart the dashboard. No sign-in is
-                    attempted with placeholder configuration.
-                  </p>
-                </>
-              )}
-              {auth.config.kind === 'invalid' && (
-                <>
-                  <span className="status-label status-label--unavailable">
-                    Sign-in configuration error
-                  </span>
-                  <h2 id="workspace-title">Identity provider setup needs attention</h2>
-                  <p>{auth.config.message}</p>
-                </>
-              )}
-              {auth.status === 'signed-out' && auth.config.kind === 'configured' && (
+              {auth.status !== 'signed-in' && auth.status !== 'initializing' && (
                 <>
                   <span className="status-label status-label--muted">Account access</span>
                   <h2 id="workspace-title">Sign in to connect a workspace</h2>
-                  <p>
-                    Sign-in uses OIDC authorization code with PKCE. The access
-                    token remains in memory; the verified API controls tenant
-                    access. An operator must provision your identity before
-                    organization APIs are available.
-                  </p>
-                  {auth.error && (
-                    <p aria-live="polite" className="workspace-setup__error" role="alert">
-                      {auth.error}
-                    </p>
-                  )}
-                  <button
-                    className="button button--primary"
-                    onClick={() => void auth.signIn()}
-                    type="button"
-                  >
-                    Sign in
-                  </button>
+                  {auth.error && <p className="workspace-setup__error" role="alert">{auth.error}</p>}
                 </>
               )}
-              {auth.status === 'error' && (
-                <>
-                  <span className="status-label status-label--unavailable">
-                    Account access unavailable
-                  </span>
-                  <h2 id="workspace-title">Sign-in could not be completed</h2>
-                  <p>{auth.error}</p>
-                  {auth.config.kind === 'configured' && (
-                    <button
-                      className="button button--primary"
-                      onClick={() => void auth.signIn()}
-                      type="button"
-                    >
-                      Try sign in again
-                    </button>
-                  )}
-                </>
+              {auth.status !== 'signed-in' && auth.status !== 'initializing' && (
+                <a className="button button--primary" href="/login"
+                  onClick={(event) => { event.preventDefault(); onNavigate('/login') }}>
+                  Open sign-in
+                </a>
               )}
               {auth.status === 'signed-in' && auth.user?.access_token && (
                 <>
@@ -500,6 +566,11 @@ function App() {
                     and restored from this tab only after membership is verified.
                     Website onboarding and SEO evidence are separate next steps.
                   </p>
+                  <PlatformAccess key={auth.sessionId} accessToken={auth.user.access_token} />
+                  <a className="text-link" href="/invitations"
+                    onClick={(event) => { event.preventDefault(); onNavigate('/invitations') }}>
+                    My invitations
+                  </a>
                   {auth.error && (
                     <p aria-live="polite" className="workspace-setup__error" role="alert">
                       {auth.error}
@@ -508,12 +579,20 @@ function App() {
                   <WorkspaceSetup
                     accessToken={auth.user.access_token}
                     current={workspace ?? undefined}
+                    key={subject}
                     onConnected={handleWorkspaceConnected}
                   />
+                  {workspace && (workspace.role === 'owner' || workspace.role === 'admin') && (
+                    <OrganizationMembers
+                      key={`members-${workspace.organization_id}`}
+                      accessToken={auth.user.access_token}
+                      organization={workspace}
+                    />
+                  )}
                   {workspace && (
                     <WebsiteOnboarding
                       accessToken={auth.user.access_token}
-                      key={workspace.organization_id}
+                      key={`websites-${workspace.organization_id}`}
                       organization={workspace}
                     />
                   )}
@@ -528,29 +607,32 @@ function App() {
           <section aria-labelledby="capabilities-title" className="capabilities">
             <div className="section-heading section-heading--compact">
               <div>
-                <p className="section-kicker">PRODUCT FOUNDATION</p>
-                <h2 id="capabilities-title">What is taking shape</h2>
+                <p className="section-kicker">PRODUCT CAPABILITIES</p>
+                <h2 id="capabilities-title">Implemented and planned</h2>
               </div>
-              <span className="section-note">Not live yet</span>
+              <span className="section-note">Current implementation status</span>
             </div>
             <div className="capability-grid">
               <CapabilityCard
                 icon="globe"
                 number="01"
-                title="Verified website evidence"
-                description="Connect an authorized site before crawl or audit data appears."
+                title="Verified website crawls"
+                description="Register and DNS-verify authorized sites, then run bounded homepage crawls and review retained evidence."
+                status="Implemented"
               />
               <CapabilityCard
                 icon="audit"
                 number="02"
-                title="Deterministic SEO audits"
-                description="Repeatable checks will be separated from AI interpretation."
+                title="Deterministic homepage audits"
+                description="Evidence-backed findings cover supported page and sitemap checks without fabricated scores."
+                status="Implemented"
               />
               <CapabilityCard
                 icon="check"
                 number="03"
                 title="Governed recommendations"
-                description="Changes require policy checks, approval where needed, and verification."
+                description="Approval-governed external change workflows are still planned."
+                status="Planned"
               />
             </div>
           </section>
@@ -570,11 +652,13 @@ function CapabilityCard({
   number,
   title,
   description,
+  status,
 }: {
   icon: IconName
   number: string
   title: string
   description: string
+  status: 'Implemented' | 'Planned'
 }) {
   return (
     <article className="capability-card">
@@ -587,8 +671,11 @@ function CapabilityCard({
       <h3>{title}</h3>
       <p>{description}</p>
       <span className="capability-card__status">
-        <span className="status-dot status-dot--checking" aria-hidden="true" />
-        Planned
+        <span
+          className={`status-dot ${status === 'Implemented' ? 'status-dot--healthy' : 'status-dot--checking'}`}
+          aria-hidden="true"
+        />
+        {status}
       </span>
     </article>
   )
