@@ -141,6 +141,20 @@ milestone details here.
   Due schedules reserve the tenant crawl budget and dispatch the existing tenant-revalidated
   crawl task. Redis/Celery execution remains opt-in and no broker is running locally.
 
+### Local Redis and MCP/CMS foundation
+
+- Installed Redis 8.10.3 locally and started it on loopback port 6379. Started separate
+  Celery worker and beat processes; Redis/HELLO and an initial due-schedule task succeeded.
+- Added read-only tenant MCP tool discovery and invocation routes for crawl history and schedules.
+  Tool names and inputs are typed, tenant membership is revalidated and no MCP write operation is
+  exposed.
+- Added a provider-neutral CMS adapter contract and public-DNS-pinned WordPress discovery adapter.
+  CMS writes remain disabled and approval-required. Discovery tests use mock transports; no real
+  WordPress endpoint or credential was contacted.
+- Real OIDC, SMTP, provider API keys and WordPress application passwords remain intentionally
+  unconfigured. `.env.example` contains names only; secrets belong in the local `.env` or
+  organization credential storage and must never be committed.
+
 ### AI provider endpoints
 
 - Added editable, organization-scoped API base URLs with official OpenAI and Anthropic

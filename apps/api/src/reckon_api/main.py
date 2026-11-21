@@ -25,6 +25,8 @@ from reckon_api.routers.model_settings import usage_router as model_usage_router
 from reckon_api.routers.native_auth import router as native_auth_router
 from reckon_api.routers.platform import router as platform_router
 from reckon_api.routers.organization_management import router as organization_management_router
+from reckon_api.routers.mcp import router as mcp_router
+from reckon_api.routers.cms import router as cms_router
 from reckon_api.routers.websites import router as websites_router
 from reckon_core.crawler import HomepageCrawler
 from reckon_core.crawl_security import PublicDnsAddressResolver
@@ -81,6 +83,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.model_test_slots = asyncio.Semaphore(2)
     app.state.model_test_resolver = PublicDnsAddressResolver(timeout_seconds=2.0)
     app.state.model_test_transport = None
+    app.state.cms_transport = None
     app.state.verification_mailer = (
         SmtpVerificationMailer(app_settings)
         if app_settings.smtp_host and app_settings.smtp_from and app_settings.web_public_origin
@@ -100,6 +103,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if (
             ("/ai-settings" in path and path.startswith("/api/v1/organizations/"))
             or ("/ai-usage" in path and path.startswith("/api/v1/organizations/"))
+            or path.startswith("/api/v1/mcp")
+            or ("/cms/" in path and path.startswith("/api/v1/organizations/"))
             or path.startswith("/api/v1/auth/")
             or path.startswith("/api/v1/invitations")
             or (path.startswith("/api/v1/organizations/") and "/changes" in path)
@@ -148,6 +153,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(native_auth_router)
     app.include_router(platform_router)
     app.include_router(organization_management_router)
+    app.include_router(mcp_router)
+    app.include_router(cms_router)
     return app
 
 

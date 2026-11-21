@@ -47,6 +47,8 @@ see [LICENSE](./LICENSE). The package metadata uses `LicenseRef-Proprietary`.
 - [x] Add encrypted TOTP MFA enrollment, challenge sign-in and disable APIs.
 - [x] Add account-security, MFA challenge, session revocation and crawl-retention UI controls.
 - [x] Add a shared typed organization permission matrix for tenant operations.
+- [x] Add local Redis/Celery execution and read-only tenant MCP tool discovery.
+- [x] Add provider-neutral CMS discovery with public-DNS-pinned WordPress support; writes require approval.
 - [x] Add tenant crawl schedules for daily/weekly cadence with owner/admin CRUD and opt-in due-worker execution.
 - [x] Add dashboard authentication and organization setup.
 - [x] Add owner/admin website onboarding and DNS verification UI.

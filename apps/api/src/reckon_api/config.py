@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     smtp_from: str | None = None
     smtp_tls: Literal["starttls", "implicit"] = "starttls"
     web_public_origin: str | None = None
+    cms_wordpress_enabled: bool = False
+    cms_wordpress_base_url: str | None = None
+    cms_wordpress_username: str | None = None
+    cms_wordpress_app_password: SecretStr | None = None
 
     model_config = SettingsConfigDict(
         env_prefix="RECKON_",
@@ -36,6 +40,19 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def require_production_integrations(self) -> "Settings":
+        cms_values = (
+            self.cms_wordpress_base_url,
+            self.cms_wordpress_username,
+            self.cms_wordpress_app_password,
+        )
+        if self.cms_wordpress_enabled and not all(
+            value is not None and (
+                not isinstance(value, SecretStr)
+                or bool(value.get_secret_value())
+            )
+            for value in cms_values
+        ):
+            raise ValueError("WordPress CMS URL, username and application password must be configured together.")
         if self.crawl_worker_enabled and not self.crawl_broker_url:
             raise ValueError("A Redis/Celery broker is required when crawl workers are enabled.")
         oidc_values = (
