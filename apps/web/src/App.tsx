@@ -7,6 +7,7 @@ import { LoginPage } from './components/LoginPage'
 import { InvitationsPage } from './components/InvitationsPage'
 import { PlatformAccess } from './components/PlatformAccess'
 import { OperationsOverview } from './components/OperationsOverview'
+import { AccountSecurity } from './components/AccountSecurity'
 import { OrganizationMembers } from './components/OrganizationMembers'
 import { WorkspaceSetup } from './components/WorkspaceSetup'
 import { WebsiteOnboarding } from './components/WebsiteOnboarding'
@@ -127,6 +128,7 @@ const navigationGroups: { label: string; items: NavigationItem[] }[] = [
       { label: 'Websites', icon: 'globe', available: true },
       { label: 'Technical audits', icon: 'audit', available: false },
       { label: 'System settings', icon: 'spark', available: true },
+      { label: 'Account security', icon: 'users', available: true },
     ],
   },
   {
@@ -277,6 +279,11 @@ function Dashboard({ onNavigate }: { onNavigate: (path: string) => void }) {
     document.getElementById('ai-settings')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
 
+  const handleAccountSecurityNavigation = () => {
+    setActiveNavigation('Account security')
+    document.getElementById('account-security')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
   const handleWorkflowAction = () => {
     if (auth.status !== 'signed-in') {
       onNavigate('/login')
@@ -359,6 +366,8 @@ function Dashboard({ onNavigate }: { onNavigate: (path: string) => void }) {
                         ? handleOverviewNavigation
                         : item.label === 'System settings'
                           ? handleSettingsNavigation
+                        : item.label === 'Account security'
+                          ? handleAccountSecurityNavigation
                         : undefined
                   }
                   type="button"
@@ -516,6 +525,10 @@ function Dashboard({ onNavigate }: { onNavigate: (path: string) => void }) {
             key={workspace?.organization_id ?? 'no-workspace'}
             organization={workspace}
           />
+          {auth.status === 'signed-in' && auth.user?.access_token &&
+            (auth.user.profile.iss === 'reckon-native') && (
+              <AccountSecurity accessToken={auth.user.access_token} />
+            )}
 
           <section
             aria-labelledby="workspace-title"

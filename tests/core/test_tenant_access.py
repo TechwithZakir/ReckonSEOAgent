@@ -61,3 +61,14 @@ def test_tenant_context_denies_user_without_active_membership() -> None:
 
     with pytest.raises(TenantAccessDenied):
         service.resolve(principal, requested_organization_id)
+
+
+def test_permission_matrix_enforces_tenant_roles() -> None:
+    from reckon_core.permissions import OrganizationPermission, has_permission
+
+    assert has_permission(OrganizationRole.OWNER, OrganizationPermission.MEMBER_MANAGE)
+    assert has_permission(OrganizationRole.ADMIN, OrganizationPermission.MEMBER_MANAGE)
+    assert not has_permission(OrganizationRole.EDITOR, OrganizationPermission.MEMBER_MANAGE)
+    assert not has_permission(OrganizationRole.VIEWER, OrganizationPermission.CRAWL_RUN)
+    assert has_permission(OrganizationRole.EDITOR, OrganizationPermission.CRAWL_RUN)
+    assert has_permission(OrganizationRole.VIEWER, OrganizationPermission.CRAWL_VIEW)

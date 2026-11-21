@@ -1,6 +1,10 @@
 import asyncio
+import base64
 import hashlib
 import json
+import hmac
+import struct
+import time
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 
@@ -18,7 +22,7 @@ from reckon_api.native_mail import EmailDeliveryUnavailable
 from reckon_core.persistence import (
     Base, NativeAccount, NativeAuthEvent, NativePasswordReset, NativeSession, NativeVerification,
 )
-from reckon_core.native_auth import NativeAuthRepository
+from reckon_core.native_auth import NativeAuthRepository, generate_mfa_secret, verify_totp
 from uuid import uuid4
 
 EMAIL = "fixture@example.com"
@@ -62,7 +66,12 @@ def native_api() -> Iterator[tuple[FastAPI, sessionmaker[Session], FixtureMailer
     )
     Base.metadata.create_all(engine)
     factory = sessionmaker(engine, expire_on_commit=False)
-    app = create_app(Settings(_env_file=None, environment="test", native_auth_enabled=True))
+    app = create_app(Settings(
+        _env_file=None,
+        environment="test",
+        native_auth_enabled=True,
+        credential_encryption_key=base64.urlsafe_b64encode(b"a" * 32).decode(),
+    ))
     mailer = FixtureMailer()
     app.state.verification_mailer = mailer
 
@@ -75,6 +84,24 @@ def native_api() -> Iterator[tuple[FastAPI, sessionmaker[Session], FixtureMailer
         yield app, factory, mailer
     finally:
         engine.dispose()
+
+
+def totp_code(secret: str, now: int | None = None) -> str:
+    key = base64.b32decode(secret + "=" * ((8 - len(secret) % 8) % 8), casefold=True)
+    counter = int(time.time() if now is None else now) // 30
+    digest = hmac.new(key, struct.pack(">Q", counter), "sha1").digest()
+    offset = digest[-1] & 15
+    binary = struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF
+    return f"{binary % 1_000_000:06d}"
+
+
+def test_totp_secret_generation_and_verification_are_typed() -> None:
+    secret = generate_mfa_secret()
+    now = int(time.time())
+    code = totp_code(secret, now)
+    assert verify_totp(secret, code, now)
+    assert not verify_totp(secret, "12a456", now)
+    assert not verify_totp(secret, "000000", now)
 
 
 def test_native_signup_verification_session_and_revocation(
@@ -134,6 +161,119 @@ def test_native_signup_verification_session_and_revocation(
                     "account.created", "session.created", "session.revoked"
                 }
                 assert PASSWORD not in repr(events) and access_token not in repr(events)
+
+    asyncio.run(run())
+
+
+def test_account_session_list_and_revocation_are_scoped(
+    native_api: tuple[FastAPI, sessionmaker[Session], FixtureMailer],
+) -> None:
+    app, factory, mailer = native_api
+
+    async def run() -> None:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            signup = await client.post("/api/v1/auth/signup", json={"email": EMAIL})
+            assert signup.status_code == 202
+            token = mailer.sent[-1][1]
+            verify = await client.post(
+                "/api/v1/auth/verify",
+                json={"token": token, "password": PASSWORD},
+            )
+            assert verify.status_code == 204
+            first = await client.post(
+                "/api/v1/auth/signin",
+                json={"email": EMAIL, "password": PASSWORD},
+            )
+            second = await client.post(
+                "/api/v1/auth/signin",
+                json={"email": EMAIL, "password": PASSWORD},
+            )
+            first_token = first.json()["access_token"]
+            second_token = second.json()["access_token"]
+            assert first_token != second_token
+            headers = {"Authorization": f"Bearer {second_token}"}
+            sessions = await client.get("/api/v1/auth/sessions", headers=headers)
+            assert sessions.status_code == 200
+            rows = sessions.json()
+            assert len(rows) == 2
+            assert sum(row["is_current"] for row in rows) == 1
+            first_row = next(row for row in rows if not row["is_current"])
+            revoked = await client.delete(
+                f"/api/v1/auth/sessions/{first_row['session_id']}",
+                headers=headers,
+            )
+            assert revoked.status_code == 204
+            remaining = await client.get("/api/v1/auth/sessions", headers=headers)
+            assert remaining.status_code == 200
+            assert len(remaining.json()) == 1
+            first_headers = {"Authorization": f"Bearer {first_token}"}
+            assert (await client.get("/api/v1/auth/sessions", headers=first_headers)).status_code == 401
+
+    asyncio.run(run())
+
+
+def test_native_mfa_enrollment_challenge_and_disable(
+    native_api: tuple[FastAPI, sessionmaker[Session], FixtureMailer],
+) -> None:
+    app, factory, mailer = native_api
+
+    async def run() -> None:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            assert (await client.post("/api/v1/auth/signup", json={"email": EMAIL})).status_code == 202
+            token = mailer.sent[-1][1]
+            assert (await client.post(
+                "/api/v1/auth/verify",
+                json={"token": token, "password": PASSWORD},
+            )).status_code == 204
+            signed_in = await client.post(
+                "/api/v1/auth/signin",
+                json={"email": EMAIL, "password": PASSWORD},
+            )
+            access_token = signed_in.json()["access_token"]
+            headers = {"Authorization": f"Bearer {access_token}"}
+            assert (await client.get("/api/v1/auth/mfa", headers=headers)).json() == {"enabled": False}
+            enrolled = await client.post("/api/v1/auth/mfa/enroll", headers=headers)
+            assert enrolled.status_code == 200
+            secret = enrolled.json()["secret"]
+            assert enrolled.json()["otpauth_uri"].startswith("otpauth://totp/Reckon:")
+            code = totp_code(secret)
+            confirmed = await client.post(
+                "/api/v1/auth/mfa/confirm",
+                headers=headers,
+                json={"code": code},
+            )
+            assert confirmed.status_code == 204
+            assert (await client.get("/api/v1/auth/mfa", headers=headers)).json() == {"enabled": True}
+
+            challenged = await client.post(
+                "/api/v1/auth/signin",
+                json={"email": EMAIL, "password": PASSWORD},
+            )
+            assert challenged.status_code == 200
+            assert challenged.json()["mfa_required"] is True
+            challenge = challenged.json()["challenge"]
+            mfa_code = totp_code(secret)
+            verified = await client.post(
+                "/api/v1/auth/signin/mfa",
+                json={"challenge": challenge, "code": mfa_code},
+            )
+            assert verified.status_code == 200
+            assert "access_token" in verified.json()
+            mfa_token = verified.json()["access_token"]
+            disabled = await client.post(
+                "/api/v1/auth/mfa/disable",
+                headers={"Authorization": f"Bearer {mfa_token}"},
+                json={"code": totp_code(secret)},
+            )
+            assert disabled.status_code == 204
+            assert (await client.get(
+                "/api/v1/auth/mfa",
+                headers={"Authorization": f"Bearer {mfa_token}"},
+            )).json() == {"enabled": False}
 
     asyncio.run(run())
 

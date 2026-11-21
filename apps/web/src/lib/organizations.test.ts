@@ -5,6 +5,7 @@ import {
   listOrganizationMembers,
   listOrganizations,
   OrganizationApiError,
+  renameOrganization,
 } from './organizations'
 
 describe('organization API client', () => {
@@ -56,6 +57,32 @@ describe('organization API client', () => {
     expect(fetcher).toHaveBeenCalledWith(
       '/api/v1/organizations/org-id%2Fwith-path/context',
       { headers: { Authorization: 'Bearer opaque-access-token' } },
+    )
+  })
+
+  it('updates an organization profile with the typed manager response', async () => {
+    const id = 'bca7dcf3-908e-4dcf-a985-5cc68f2355ea'
+    const fetcher = vi.fn<typeof fetch>(async () =>
+      new Response(JSON.stringify({
+        organization_id: id,
+        name: 'Renamed organization',
+        role: 'admin',
+      }), { status: 200 }),
+    )
+    await expect(
+      renameOrganization('token', id, 'Renamed organization', fetcher),
+    ).resolves.toEqual({
+      organization_id: id,
+      name: 'Renamed organization',
+      role: 'admin',
+    })
+    expect(fetcher).toHaveBeenCalledWith(
+      `/api/v1/organizations/${id}/profile`,
+      expect.objectContaining({
+        method: 'PATCH',
+        headers: expect.objectContaining({ Authorization: 'Bearer token' }),
+        body: JSON.stringify({ name: 'Renamed organization' }),
+      }),
     )
   })
 

@@ -21,6 +21,7 @@ from reckon_api.native_mail import SmtpVerificationMailer
 from reckon_api.routers.health import router as health_router
 from reckon_api.routers.organizations import router as organizations_router
 from reckon_api.routers.model_settings import router as model_settings_router
+from reckon_api.routers.model_settings import usage_router as model_usage_router
 from reckon_api.routers.native_auth import router as native_auth_router
 from reckon_api.routers.platform import router as platform_router
 from reckon_api.routers.organization_management import router as organization_management_router
@@ -28,6 +29,7 @@ from reckon_api.routers.websites import router as websites_router
 from reckon_core.crawler import HomepageCrawler
 from reckon_core.crawl_security import PublicDnsAddressResolver
 from reckon_core.oidc import OidcTokenVerifier
+from reckon_api.crawl_worker import CeleryCrawlQueue, create_celery_app
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -71,6 +73,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.session_factory = session_factory
     app.state.token_verifier = token_verifier
     app.state.homepage_crawler = HomepageCrawler()
+    app.state.crawl_queue = (
+        CeleryCrawlQueue(create_celery_app(app_settings))
+        if app_settings.crawl_worker_enabled
+        else None
+    )
     app.state.model_test_slots = asyncio.Semaphore(2)
     app.state.model_test_resolver = PublicDnsAddressResolver(timeout_seconds=2.0)
     app.state.model_test_transport = None
@@ -92,6 +99,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         path = request.url.path
         if (
             ("/ai-settings" in path and path.startswith("/api/v1/organizations/"))
+            or ("/ai-usage" in path and path.startswith("/api/v1/organizations/"))
             or path.startswith("/api/v1/auth/")
             or path.startswith("/api/v1/invitations")
             or (path.startswith("/api/v1/organizations/") and "/changes" in path)
@@ -136,6 +144,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(websites_router)
     app.include_router(crawls_router)
     app.include_router(model_settings_router)
+    app.include_router(model_usage_router)
     app.include_router(native_auth_router)
     app.include_router(platform_router)
     app.include_router(organization_management_router)

@@ -35,3 +35,27 @@ def test_production_settings_accept_complete_integration_configuration() -> None
 def test_crawl_daily_limit_must_be_positive() -> None:
     with pytest.raises(ValidationError, match="crawl_daily_limit"):
         Settings(_env_file=None, environment="test", crawl_daily_limit=0)
+
+
+def test_crawl_worker_requires_broker() -> None:
+    with pytest.raises(ValidationError, match="broker"):
+        Settings(
+            _env_file=None,
+            environment="test",
+            crawl_worker_enabled=True,
+        )
+
+
+def test_crawl_history_retention_days_are_bounded() -> None:
+    settings = Settings(
+        _env_file=None,
+        environment="test",
+        crawl_history_retention_days=365,
+    )
+    assert settings.crawl_history_retention_days == 365
+    with pytest.raises(ValidationError, match="crawl_history_retention_days"):
+        Settings(
+            _env_file=None,
+            environment="test",
+            crawl_history_retention_days=29,
+        )

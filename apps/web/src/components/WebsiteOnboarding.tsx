@@ -260,6 +260,7 @@ export function WebsiteOnboarding({
               organizationId={organization.organization_id}
               websiteId={website.website_id}
               verified={website.verification_status === 'verified'}
+              role={organization.role}
               onUsageChanged={() => setUsageVersion((version) => version + 1)}
             />
           </article>

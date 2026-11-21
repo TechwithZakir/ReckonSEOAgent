@@ -111,6 +111,74 @@ def test_crawl_extracts_bounded_meta_description_and_h1_count() -> None:
     assert result.h1_count == 2
 
 
+def test_crawl_extracts_bounded_structural_and_alt_evidence() -> None:
+    html = (
+        "<h1>Main heading</h1><h2>Section</h2>"
+        '<a href="/guide">Guide</a><a href="https://other.example.net/">External</a>'
+        '<img src="/hero.png"><img alt="" src="/decorative.png">'
+        '<img alt="A useful diagram" src="/diagram.png">'
+    ).encode()
+    transport = FakeTransport(
+        (
+            response(404),
+            response(
+                200,
+                headers={"content-type": "text/html"},
+                body=html,
+            ),
+        )
+    )
+
+    result = HomepageCrawler(FakeAddressResolver(), transport).crawl(
+        "https",
+        "example.com",
+    )
+
+    assert result.h1_count == 1
+    assert result.h2_count == 1
+    assert result.internal_link_count == 1
+    assert result.image_count == 3
+    assert result.missing_alt_text_count == 2
+
+
+def test_bounded_multi_page_crawl_fetches_only_same_host_discovered_pages() -> None:
+    homepage = (
+        b"<html><title>Example</title><h1>Main</h1>"
+        b'<a href="/guide?tracking=secret">Guide</a>'
+        b'<a href="/guide?tracking=secret">Duplicate guide</a>'
+        b'<a href="https://other.example.net/private">External</a></html>'
+    )
+    transport = FakeTransport(
+        (
+            response(404),
+            response(
+                200,
+                headers={"content-type": "text/html"},
+                body=homepage,
+            ),
+            response(200, body=b"User-agent: *\nAllow: /\n"),
+            response(
+                200,
+                headers={"content-type": "text/html"},
+                body=b"<html><title>Guide</title><h2>Help</h2></html>",
+            ),
+        )
+    )
+
+    result = HomepageCrawler(FakeAddressResolver(), transport).crawl_pages(
+        "https",
+        "example.com",
+        max_pages=10,
+    )
+
+    assert result.internal_urls == ("https://example.com/guide",)
+    assert len(result.page_evidence) == 1
+    assert result.page_evidence[0].url == "https://example.com/guide"
+    assert result.page_evidence[0].status == "fetched"
+    assert result.page_evidence[0].title == "Guide"
+    assert result.page_evidence[0].h2_count == 1
+
+
 def test_crawl_captures_noindex_signals_and_redacts_canonical_url() -> None:
     transport = FakeTransport(
         (

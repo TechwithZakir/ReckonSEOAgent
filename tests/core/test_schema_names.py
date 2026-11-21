@@ -8,6 +8,8 @@ def test_physical_database_schema_uses_short_table_and_column_names() -> None:
         "auth_accounts",
         "auth_verify",
         "auth_reset",
+        "crawl_schedules",
+        "auth_mfa_challenges",
         "auth_sessions",
         "auth_limits",
         "auth_events",
@@ -107,6 +109,8 @@ def test_physical_database_schema_uses_short_table_and_column_names() -> None:
         "sitemap_discovery_truncated",
         "meta_desc",
         "h1_count",
+        "internal_urls",
+        "page_evidence",
         "redirect_count",
         "error_code",
     }

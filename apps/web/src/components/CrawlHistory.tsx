@@ -1,5 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
-import { CrawlApiError, listCrawls, startCrawl } from '../lib/crawls'
+import {
+  CrawlApiError,
+  deleteCrawlSchedule,
+  listCrawlSchedules,
+  listCrawls,
+  prioritizeCrawl,
+  purgeCrawlHistory,
+  saveCrawlSchedule,
+  startCrawl,
+} from '../lib/crawls'
+import type { CrawlSchedule } from '../lib/crawls'
 import type { CrawlResponse } from '../lib/crawls'
 
 export function CrawlResults({ crawls }: { crawls: CrawlResponse[] }) {
@@ -138,10 +148,10 @@ export function CrawlResults({ crawls }: { crawls: CrawlResponse[] }) {
 }
 
 export function CrawlHistory({
-  accessToken, organizationId, websiteId, verified, onUsageChanged,
+  accessToken, organizationId, websiteId, verified, role, onUsageChanged,
 }: CrawlHistoryProps) {
   return <CrawlHistoryState key={JSON.stringify([accessToken, organizationId, websiteId, verified])}
-    accessToken={accessToken} organizationId={organizationId} websiteId={websiteId} verified={verified}
+    accessToken={accessToken} organizationId={organizationId} websiteId={websiteId} verified={verified} role={role}
     onUsageChanged={onUsageChanged} />
 }
 
@@ -150,16 +160,22 @@ type CrawlHistoryProps = {
   organizationId: string
   websiteId: string
   verified: boolean
+  role?: 'owner' | 'admin' | 'editor' | 'viewer'
   onUsageChanged?: () => void
 }
 
-function CrawlHistoryState({ accessToken, organizationId, websiteId, verified, onUsageChanged }: CrawlHistoryProps) {
+function CrawlHistoryState({ accessToken, organizationId, websiteId, verified, role, onUsageChanged }: CrawlHistoryProps) {
   const [crawls, setCrawls] = useState<CrawlResponse[]>([])
   const [loading, setLoading] = useState(verified)
   const [busy, setBusy] = useState(false)
   const [historyError, setHistoryError] = useState<string | null>(null)
   const [crawlError, setCrawlError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [specialistNotice, setSpecialistNotice] = useState<string | null>(null)
+  const [purgeReason, setPurgeReason] = useState('')
+  const [schedules, setSchedules] = useState<CrawlSchedule[]>([])
+  const [scheduleFrequency, setScheduleFrequency] = useState<'daily' | 'weekly'>('daily')
+  const [scheduleActive, setScheduleActive] = useState(true)
   const [version, setVersion] = useState(0)
   const [retry, setRetry] = useState(false)
   const requestKey = useRef<string | null>(null)
@@ -183,6 +199,25 @@ function CrawlHistoryState({ accessToken, organizationId, websiteId, verified, o
       .finally(() => { if (active) setLoading(false) })
     return () => { active = false }
   }, [accessToken, organizationId, websiteId, verified, version])
+
+  useEffect(() => {
+    if (!verified || !role || !['owner', 'admin'].includes(role)) return
+    let active = true
+    void listCrawlSchedules(accessToken, organizationId, websiteId)
+      .then((rows) => {
+        if (active) {
+          setSchedules(rows)
+          if (rows[0]) {
+            setScheduleFrequency(rows[0].frequency)
+            setScheduleActive(rows[0].active)
+          }
+        }
+      })
+      .catch((cause: unknown) => {
+        if (active) setCrawlError(cause instanceof Error ? cause.message : 'Could not load crawl schedules.')
+      })
+    return () => { active = false }
+  }, [accessToken, organizationId, websiteId, verified, role, version])
 
   const handleCrawl = async () => {
     if (!verified || inFlight.current) return
@@ -218,6 +253,96 @@ function CrawlHistoryState({ accessToken, organizationId, websiteId, verified, o
     }
   }
 
+  const handlePrioritize = async () => {
+    const latest = crawls[0]
+    if (!verified || !latest || latest.status !== 'completed' || latest.findings === null || latest.findings.length === 0) return
+    setBusy(true)
+    setCrawlError(null)
+    setSpecialistNotice(null)
+    try {
+      const result = await prioritizeCrawl(
+        accessToken,
+        organizationId,
+        websiteId,
+        latest.crawl_id,
+        crypto.randomUUID(),
+      )
+      if (result.status === 'completed') {
+        setSpecialistNotice(
+          `Prioritization completed. Ordered findings: ${(result.ordered_codes ?? []).join(', ')}.`,
+        )
+      } else if (result.status === 'unknown') {
+        setSpecialistNotice('The provider outcome is unknown. AI usage remains unresolved; do not retry blindly.')
+      } else {
+        setCrawlError('The specialist returned invalid output and was not accepted.')
+      }
+    } catch (cause) {
+      setCrawlError(cause instanceof Error ? cause.message : 'Could not prioritize crawl findings.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handlePurge = async () => {
+    if (!verified || !role || !['owner', 'admin'].includes(role)) return
+    setBusy(true)
+    setCrawlError(null)
+    setNotice(null)
+    try {
+      const result = await purgeCrawlHistory(
+        accessToken,
+        organizationId,
+        websiteId,
+        purgeReason,
+      )
+      setNotice(`Purged ${result.deleted_count} crawl run(s) older than ${result.retention_days} days.`)
+      setPurgeReason('')
+      setVersion((value) => value + 1)
+    } catch (cause) {
+      setCrawlError(cause instanceof Error ? cause.message : 'Could not purge crawl history.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleSaveSchedule = async () => {
+    if (!verified || !role || !['owner', 'admin'].includes(role)) return
+    setBusy(true)
+    setCrawlError(null)
+    setNotice(null)
+    try {
+      await saveCrawlSchedule(
+        accessToken,
+        organizationId,
+        websiteId,
+        scheduleFrequency,
+        scheduleActive,
+        schedules[0]?.schedule_id ?? null,
+      )
+      setNotice('Crawl schedule saved.')
+      setVersion((value) => value + 1)
+    } catch (cause) {
+      setCrawlError(cause instanceof Error ? cause.message : 'Could not save crawl schedule.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleDeleteSchedule = async (scheduleId: string) => {
+    setBusy(true)
+    setCrawlError(null)
+    setNotice(null)
+    try {
+      await deleteCrawlSchedule(accessToken, organizationId, websiteId, scheduleId)
+      setSchedules((current) => current.filter((schedule) => schedule.schedule_id !== scheduleId))
+      setNotice('Crawl schedule removed.')
+    } catch (cause) {
+      setCrawlError(cause instanceof Error ? cause.message : 'Could not remove crawl schedule.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <section aria-label="Crawl history" className="crawl-history">
       <div className="crawl-history__heading">
@@ -229,17 +354,97 @@ function CrawlHistoryState({ accessToken, organizationId, websiteId, verified, o
           <button className="button button--secondary" disabled={!verified || loading || busy} onClick={() => { setLoading(true); setHistoryError(null); setVersion((value) => value + 1) }} type="button">
             {loading ? 'Loading…' : 'Refresh history'}
           </button>
+          <button
+            className="button button--secondary"
+            disabled={!verified || busy || loading || crawls[0]?.status !== 'completed' || !crawls[0]?.findings?.length}
+            onClick={() => void handlePrioritize()}
+            type="button"
+          >
+            Prioritize findings
+          </button>
         </div>
       </div>
       {!verified && <p>Verify this website before crawling or viewing its history.</p>}
       {busy && <p role="status">Crawl in progress…</p>}
       {notice && <p role="status">{notice}</p>}
+      {specialistNotice && <p role="status">{specialistNotice}</p>}
       {crawlError && <p className="workspace-setup__error" role="alert">Crawl request: {crawlError}</p>}
       {retry && (
         <p>
           The outcome may be unknown. Retry uses the same request key; check history before starting a new crawl.{' '}
           <button className="button button--secondary" disabled={busy} onClick={() => { requestKey.current = null; setRetry(false); setCrawlError(null) }} type="button">Start a new request instead</button>
         </p>
+      )}
+      {role && ['owner', 'admin'].includes(role) && verified && (
+        <form
+          className="workspace-form"
+          onSubmit={(event) => {
+            event.preventDefault()
+            void handleSaveSchedule()
+          }}
+        >
+          <h5>Crawl schedule</h5>
+          <label htmlFor={`crawl-schedule-frequency-${websiteId}`}>Frequency</label>
+          <select
+            id={`crawl-schedule-frequency-${websiteId}`}
+            value={scheduleFrequency}
+            disabled={busy}
+            onChange={(event) => setScheduleFrequency(event.target.value === 'weekly' ? 'weekly' : 'daily')}
+          >
+            <option value="daily">Daily</option>
+            <option value="weekly">Weekly</option>
+          </select>
+          <label htmlFor={`crawl-schedule-active-${websiteId}`}>Active</label>
+          <input
+            id={`crawl-schedule-active-${websiteId}`}
+            type="checkbox"
+            checked={scheduleActive}
+            disabled={busy}
+            onChange={(event) => setScheduleActive(event.target.checked)}
+          />
+          <button className="button button--secondary" type="submit" disabled={busy}>
+            {schedules.length > 0 ? 'Update schedule' : 'Create schedule'}
+          </button>
+          {schedules.map((schedule) => (
+            <div key={schedule.schedule_id}>
+              <p>
+                {schedule.frequency} · {schedule.active ? 'active' : 'paused'} · next
+                {' '}{new Date(schedule.next_run_at).toLocaleString()}
+              </p>
+              <button
+                className="button button--secondary"
+                type="button"
+                disabled={busy}
+                onClick={() => void handleDeleteSchedule(schedule.schedule_id)}
+              >
+                Remove schedule
+              </button>
+            </div>
+          ))}
+        </form>
+      )}
+      {role && ['owner', 'admin'].includes(role) && verified && (
+        <form
+          className="workspace-form"
+          onSubmit={(event) => {
+            event.preventDefault()
+            void handlePurge()
+          }}
+        >
+          <label htmlFor={`crawl-purge-reason-${websiteId}`}>Retention purge reason</label>
+          <input
+            id={`crawl-purge-reason-${websiteId}`}
+            minLength={3}
+            maxLength={200}
+            required
+            value={purgeReason}
+            disabled={busy}
+            onChange={(event) => setPurgeReason(event.target.value)}
+          />
+          <button className="button button--secondary" type="submit" disabled={busy}>
+            Purge expired crawl history
+          </button>
+        </form>
       )}
       {verified && historyError && <p className="workspace-setup__error" role="alert">History: {historyError}</p>}
       {verified && loading && <p role="status">Loading crawl history…</p>}

@@ -82,6 +82,36 @@ def headers(people: dict[str, tuple[UUID, str]], name: str, key: str = "fixture-
     return {"Authorization": f"Bearer {people[name][1]}", "Idempotency-Key": key}
 
 
+def test_organization_profile_rename_is_manager_only_and_audited(
+    management_api: tuple[FastAPI, sessionmaker[Session], UUID, dict[str, tuple[UUID, str]], FixtureMailer],
+) -> None:
+    app, factory, org, people, _ = management_api
+
+    async def run() -> None:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            path = f"/api/v1/organizations/{org}/profile"
+            denied = await client.patch(
+                path,
+                headers={"Authorization": f"Bearer {people['viewer'][1]}"},
+                json={"name": "Renamed organization"},
+            )
+            assert denied.status_code == 403
+            updated = await client.patch(
+                path,
+                headers={"Authorization": f"Bearer {people['admin'][1]}"},
+                json={"name": "Renamed organization"},
+            )
+            assert updated.status_code == 200
+            assert updated.json()["name"] == "Renamed organization"
+            assert updated.headers["cache-control"] == "no-store"
+
+    asyncio.run(run())
+    with factory() as session:
+        organization = session.get(Organization, org)
+        assert organization is not None
+        assert organization.name == "Renamed organization"
+
+
 def test_role_approval_is_bound_authorized_and_preserves_last_owner(
     management_api: tuple[FastAPI, sessionmaker[Session], UUID, dict[str, tuple[UUID, str]], FixtureMailer],
 ) -> None:

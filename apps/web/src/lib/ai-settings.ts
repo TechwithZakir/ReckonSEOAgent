@@ -13,6 +13,21 @@ export type AISettings = {
   encryption_available: boolean
 }
 
+export type AIUsageReservation = {
+  reservation_id: string
+  task_id: string
+  request_id: string
+  status: 'reserved' | 'settled'
+  provider: string
+  model: string
+  max_input_tokens: number
+  max_output_tokens: number
+  input_tokens: number | null
+  output_tokens: number | null
+  started_at: string
+  settled_at: string | null
+}
+
 function isAISettings(value: unknown): value is AISettings {
   if (!value || typeof value !== 'object') return false
   const data = value as Record<string, unknown>
@@ -123,4 +138,89 @@ export async function testAISettings(
       provider: result.provider, model: result.model,
       input_tokens: result.input_tokens, output_tokens: result.output_tokens,
   }
+}
+
+const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i
+
+function isAIUsageReservation(value: unknown): value is AIUsageReservation {
+  if (!value || typeof value !== 'object') return false
+  const row = value as Record<string, unknown>
+  return ['reservation_id', 'task_id', 'request_id'].every((key) =>
+    typeof row[key] === 'string' && uuid.test(row[key] as string)) &&
+    (row.status === 'reserved' || row.status === 'settled') &&
+    typeof row.provider === 'string' &&
+    typeof row.model === 'string' &&
+    Number.isSafeInteger(row.max_input_tokens) && (row.max_input_tokens as number) >= 0 &&
+    Number.isSafeInteger(row.max_output_tokens) && (row.max_output_tokens as number) >= 0 &&
+    (row.input_tokens === null || (Number.isSafeInteger(row.input_tokens) && (row.input_tokens as number) >= 0)) &&
+    (row.output_tokens === null || (Number.isSafeInteger(row.output_tokens) && (row.output_tokens as number) >= 0)) &&
+    typeof row.started_at === 'string' &&
+    (row.settled_at === null || typeof row.settled_at === 'string')
+}
+
+export async function listAIUsage(
+  token: string,
+  organizationId: string,
+  fetcher: typeof fetch = fetch,
+): Promise<AIUsageReservation[]> {
+  const response = await fetcher(
+    `/api/v1/organizations/${encodeURIComponent(organizationId)}/ai-usage`,
+    { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' },
+  )
+  if (!response.ok) {
+    throw new Error(
+      response.status === 403
+        ? 'Only organization owners and admins can view AI usage.'
+        : `AI usage could not be loaded (HTTP ${response.status}).`,
+    )
+  }
+  const data: unknown = await response.json()
+  if (!Array.isArray(data) || !data.every(isAIUsageReservation)) {
+    throw new Error('The API returned invalid AI usage.')
+  }
+  return data
+}
+
+export async function reconcileAIUsage(
+  token: string,
+  organizationId: string,
+  reservationId: string,
+  inputTokens: number,
+  outputTokens: number,
+  verificationReference: string,
+  fetcher: typeof fetch = fetch,
+): Promise<AIUsageReservation> {
+  if (!uuid.test(reservationId) ||
+      !Number.isSafeInteger(inputTokens) || inputTokens < 0 ||
+      !Number.isSafeInteger(outputTokens) || outputTokens < 0 ||
+      !verificationReference.trim() || verificationReference.trim().length > 256) {
+    throw new Error('Invalid AI usage reconciliation.')
+  }
+  const response = await fetcher(
+    `/api/v1/organizations/${encodeURIComponent(organizationId)}/ai-usage/${encodeURIComponent(reservationId)}/reconcile`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        verification_reference: verificationReference.trim(),
+      }),
+      cache: 'no-store',
+    },
+  )
+  if (!response.ok) {
+    throw new Error(
+      response.status === 409
+        ? 'This reservation is not unresolved unknown usage.'
+        : response.status === 404
+          ? 'The AI usage reservation was not found.'
+          : `AI usage could not be reconciled (HTTP ${response.status}).`,
+    )
+  }
+  const data: unknown = await response.json()
+  if (!isAIUsageReservation(data)) {
+    throw new Error('The API returned invalid reconciled AI usage.')
+  }
+  return data
 }

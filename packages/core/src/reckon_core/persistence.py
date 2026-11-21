@@ -63,6 +63,12 @@ class NativeAccount(Base):
     email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True)
     password_hash: Mapped[str] = mapped_column("pw_hash", String(512), nullable=False)
     email_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    mfa_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    mfa_secret_cipher: Mapped[bytes | None] = mapped_column(
+        "mfa_secret_cipher",
+        LargeBinary,
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
@@ -86,6 +92,18 @@ class NativePasswordReset(Base):
     )
 
     token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        "usr_id", Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class NativeMfaChallenge(Base):
+    __tablename__ = "auth_mfa_challenges"
+    __table_args__ = (Index("ix_auth_mfa_challenges_expiry", "expires_at"),)
+
+    challenge_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
     user_id: Mapped[UUID] = mapped_column(
         "usr_id", Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
@@ -556,5 +574,49 @@ class CrawlRun(Base):
         nullable=True,
     )
     h1_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    internal_urls: Mapped[list[str] | None] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"),
+        nullable=True,
+    )
+    page_evidence: Mapped[list[dict[str, object]] | None] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"),
+        nullable=True,
+    )
     redirect_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class CrawlSchedule(Base):
+    __tablename__ = "crawl_schedules"
+    __table_args__ = (
+        UniqueConstraint("org_id", "site_id", name="uq_crawl_schedule_org_site"),
+        ForeignKeyConstraint(
+            ["site_id", "org_id"],
+            ["sites.id", "sites.org_id"],
+            ondelete="CASCADE",
+        ),
+        Index("ix_crawl_schedules_next_active", "active", "next_run_at"),
+        CheckConstraint("frequency IN ('daily', 'weekly')", name="ck_crawl_schedule_frequency"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column("org_id", Uuid, nullable=False)
+    website_id: Mapped[UUID] = mapped_column("site_id", Uuid, nullable=False)
+    actor_user_id: Mapped[UUID] = mapped_column(
+        "actor_usr_id",
+        Uuid,
+        ForeignKey("users.id"),
+        nullable=False,
+    )
+    frequency: Mapped[Literal["daily", "weekly"]] = mapped_column(
+        String(10),
+        nullable=False,
+    )
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    next_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_run_id: Mapped[UUID | None] = mapped_column(Uuid, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )

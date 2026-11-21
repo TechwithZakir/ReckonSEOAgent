@@ -1,10 +1,11 @@
 import asyncio
 import hmac
-from typing import Annotated
+from datetime import timezone
+from typing import Annotated, Literal
 from uuid import UUID, uuid5
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
-from pydantic import BaseModel, ConfigDict, SecretStr, field_validator
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, StringConstraints, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -25,15 +26,25 @@ from reckon_core.model_gateway import (
     ModelGatewayRequest, ModelLimitExceeded, ModelMessage, ModelOutcomeUnknown,
 )
 from reckon_core.model_providers import ProviderAdapter
-from reckon_core.model_usage_repository import ModelBudgetExceeded
+from reckon_core.model_usage import ModelUsageReport
+from reckon_core.model_usage_repository import (
+    ModelBudgetExceeded,
+    ModelReservationNotFound,
+    ModelUsageConflict,
+    SqlAlchemyModelUsageRepository,
+)
 from reckon_core.persistence import OrganizationModelSettings
 from reckon_core.repositories import IdempotencyConflict
 from reckon_core.tenancy import (
     AuthenticatedPrincipal, OrganizationRole, TenantAccessDenied, TenantContext,
 )
+from reckon_core.permissions import OrganizationPermission, require_permission
 
 router = APIRouter(
     prefix="/api/v1/organizations/{organization_id}/ai-settings", tags=["AI settings"]
+)
+usage_router = APIRouter(
+    prefix="/api/v1/organizations/{organization_id}/ai-usage", tags=["AI usage"]
 )
 
 
@@ -76,6 +87,34 @@ class ModelTestResponse(BaseModel):
     output_tokens: int
 
 
+class AIUsageResponse(BaseModel):
+    reservation_id: UUID
+    task_id: UUID
+    request_id: UUID
+    status: Literal["reserved", "settled"]
+    provider: str
+    model: str
+    max_input_tokens: int
+    max_output_tokens: int
+    input_tokens: int | None
+    output_tokens: int | None
+    started_at: str
+    settled_at: str | None
+
+
+class ReconcileAIUsage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    input_tokens: int = Field(strict=True, ge=0)
+    output_tokens: int = Field(strict=True, ge=0)
+    verification_reference: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=8, max_length=256),
+    ]
+
+
+AIUsageResponse.model_rebuild()
+
+
 class _TestAuthorizer:
     def __init__(self, policy: ModelExecutionPolicy) -> None:
         self._policy = policy
@@ -83,7 +122,9 @@ class _TestAuthorizer:
     def authorize(
         self, context: TenantContext, task_id: UUID, request: ModelGatewayRequest,
     ) -> ModelExecutionPolicy:
-        if context.role not in {OrganizationRole.OWNER, OrganizationRole.ADMIN}:
+        try:
+            require_permission(context.role, OrganizationPermission.AI_SETTINGS_MANAGE)
+        except TenantAccessDenied:
             raise TenantAccessDenied
         return self._policy
 
@@ -92,7 +133,9 @@ def _require_manager(
     principal: AuthenticatedPrincipal, organization_id: UUID, session: Session
 ) -> TenantContext:
     context = resolve_organization_access(principal, organization_id, session)
-    if context.role not in {OrganizationRole.OWNER, OrganizationRole.ADMIN}:
+    try:
+        require_permission(context.role, OrganizationPermission.AI_SETTINGS_MANAGE)
+    except TenantAccessDenied:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Organization administrator access is required.",
@@ -276,3 +319,99 @@ def delete_model_settings(
     except TenantAccessDenied as error:
         raise HTTPException(status_code=403, detail="Organization administrator access is required.") from error
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@usage_router.get("", response_model=None)
+def list_ai_usage(
+    organization_id: UUID,
+    limit: int = Query(default=100, ge=1, le=100),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+    session: Session = Depends(get_database_session),
+) -> list[dict[str, object]]:
+    context = _require_manager(principal, organization_id, session)
+    try:
+        rows = SqlAlchemyModelUsageRepository(session).list_for_organization(context, limit)
+    except TenantAccessDenied as error:
+        raise HTTPException(status_code=403, detail="Organization administrator access is required.") from error
+
+    response: list[dict[str, object]] = []
+    for row in rows:
+        started = row.started_at
+        settled = row.settled_at
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        if settled is not None and settled.tzinfo is None:
+            settled = settled.replace(tzinfo=timezone.utc)
+        response.append(
+            {
+                "reservation_id": str(row.id),
+                "task_id": str(row.task_id),
+                "request_id": str(row.request_id),
+                "status": row.status,
+                "provider": row.provider,
+                "model": row.model,
+                "max_input_tokens": row.max_input_tokens,
+                "max_output_tokens": row.max_output_tokens,
+                "input_tokens": row.input_tokens,
+                "output_tokens": row.output_tokens,
+                "started_at": started.astimezone(timezone.utc).isoformat(),
+                "settled_at": settled.astimezone(timezone.utc).isoformat() if settled is not None else None,
+            }
+        )
+    return response
+
+
+@usage_router.post("/{reservation_id}/reconcile", response_model=AIUsageResponse)
+def reconcile_ai_usage(
+    organization_id: UUID,
+    reservation_id: UUID,
+    payload: ReconcileAIUsage,
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+    session: Session = Depends(get_database_session),
+) -> AIUsageResponse:
+    context = _require_manager(principal, organization_id, session)
+    try:
+        row = SqlAlchemyModelUsageRepository(session).reconcile_unknown(
+            context,
+            reservation_id,
+            request.state.request_id,
+            ModelUsageReport(
+                input_tokens=payload.input_tokens,
+                output_tokens=payload.output_tokens,
+            ),
+            payload.verification_reference,
+        )
+        session.commit()
+    except ModelReservationNotFound as error:
+        raise HTTPException(status_code=404, detail="AI usage reservation not found.") from error
+    except ModelUsageConflict as error:
+        raise HTTPException(
+            status_code=409,
+            detail="The reservation is not an unresolved unknown outcome.",
+        ) from error
+    except TenantAccessDenied as error:
+        raise HTTPException(status_code=403, detail="Organization administrator access is required.") from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    settled = row.settled_at
+    started = row.started_at
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    if settled is not None and settled.tzinfo is None:
+        settled = settled.replace(tzinfo=timezone.utc)
+    return AIUsageResponse(
+        reservation_id=row.id,
+        task_id=row.task_id,
+        request_id=row.request_id,
+        status=row.status,
+        provider=row.provider,
+        model=row.model,
+        max_input_tokens=row.max_input_tokens,
+        max_output_tokens=row.max_output_tokens,
+        input_tokens=row.input_tokens,
+        output_tokens=row.output_tokens,
+        started_at=started.astimezone(timezone.utc).isoformat(),
+        settled_at=settled.astimezone(timezone.utc).isoformat() if settled is not None else None,
+    )

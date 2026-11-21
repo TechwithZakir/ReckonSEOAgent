@@ -27,9 +27,12 @@ milestone details here.
   audit, prioritization, prompt-injection and tenant-isolation skills from an allowlist,
   includes only deterministic finding metadata in model input, and accepts only a complete
   permutation of the supplied finding codes. It grants no tools.
-- This is not yet a runnable agent or API. A future integration must load authorized
-  tenant/website evidence, bind task-specific model/budget policy, execute through the
-  gateway, retain run attribution and verify skill availability in packaged deployments.
+- Added a runnable core/API vertical slice for the read-only prioritizer. It loads only
+  completed tenant/website crawl findings, binds a fixed task policy and model budget,
+  executes through the existing model gateway, validates the typed result and records
+  started/completed/unknown/invalid audit events. Unknown outcomes return 502 and preserve
+  gateway reservations without claiming success. The API route uses idempotency, settings
+  binding and the allowlisted skill root; no real provider request is made by tests.
 
 ### AI provider test
 
@@ -42,6 +45,101 @@ milestone details here.
   an operator reconciliation workflow. Concurrency limits are per API process.
 - Provider tests use mocked responses only. Actual provider connectivity remains unverified
   until an authorized user deliberately runs a test.
+
+### AI usage visibility and reconciliation
+
+- Added manager-only tenant AI usage listing and reconciliation APIs. Usage remains
+  tenant-attributed and exposes reserved/settled state, limits, reported tokens and timestamps.
+  Only reservations with a recorded unknown-outcome audit event can be reconciled, and
+  reconciliation requires confirmed usage counts plus an independent verification reference.
+
+### Broader homepage technical audits
+
+- Extended the isolated homepage crawler with bounded H2, same-host internal-link and image
+  alt-text evidence. The deterministic homepage audit emits medium/low-impact findings with
+  source URLs and verification guidance. No additional crawl or page fetch occurs.
+
+### Bounded multi-page crawl evidence
+
+- Added a depth-one discovered-page crawler. It normalizes same-host HTML links, removes
+  tracking fragments/query parameters from evidence, de-duplicates URLs, applies robots.txt,
+  caps discovered pages at 10 and uses an aggregate 15-second page phase. External hosts,
+  unsafe URLs and non-page responses are recorded or rejected without a second-hop fetch.
+- Added additive `0017_multi_page_crawl_evidence` persistence/API contracts for discovered URLs
+  and page evidence. The migration was applied with explicit operator approval and confirmed
+  at `0017_multi_page_crawl_evidence (head)`. The local API was started and
+  `/health/live` and `/health/ready` returned HTTP 200.
+
+### Redis/Celery crawl dispatch
+
+- Added opt-in Redis/Celery crawl dispatch configuration. By default, crawls remain synchronous.
+  When enabled, the API reserves and audits the crawl, sends a tenant-bound task containing
+  organization, website, run, actor and request IDs, and returns `running`. The worker
+  rechecks tenant membership and website/run state before execution and has no blind retry.
+  Queue failures mark the run `failed` as `crawl_queue_unavailable`.
+- No Redis broker or Celery worker was started, and no real crawl or provider request was made
+  during implementation. Tests inject the queue and verify that no synchronous crawler call
+  occurs and worker payload IDs match the persisted run.
+ - Redis was unavailable on `127.0.0.1:6379`, so no worker was started. The latest API process
+  was restarted with explicit approval; liveness and readiness returned HTTP 200.
+
+### Explicit crawl-history retention
+
+- Added a server-derived retention cutoff from `RECKON_CRAWL_HISTORY_RETENTION_DAYS`
+  (default 365, bounded 30–3650 days) and an owner/admin-only purge API. Purges delete at most
+  1000 terminal crawl rows older than the cutoff, preserve running rows, and record an audited
+  count/cutoff/reason event. Cleanup is never automatic and requires an explicit reason.
+ - Applied with explicit restart approval; the local API liveness/readiness checks returned 200.
+
+### Organization profile management
+
+- Added an owner/admin organization profile rename API and dashboard control. Updates are
+  tenant-scoped, audited and limited to 1–200 characters. Viewer accounts receive 403.
+
+### AI usage and specialist dashboard visibility
+
+- Added dashboard controls for AI usage reservations and evidence-bound reconciliation.
+  Reserved and settled usage remain visible, and reconciliation requires confirmed token
+  counts and an independent verification reference. Added crawl-history specialist run controls
+  for the existing read-only prioritizer with unknown/invalid outcome messaging.
+
+### Native account session management
+
+- Added native-account session listing and per-session revocation. Listings expose only a
+  SHA-256 session fingerprint, expiry and current-session indicator; raw bearer tokens are
+  never returned or written to audit details. Revocation is tenant-independent account state,
+  scoped to the authenticated native user, and audited.
+
+### Native-account TOTP MFA
+
+- Added encrypted TOTP secret enrollment, 5-minute challenge sign-in, confirmation and disable
+  APIs. TOTP secrets use the existing credential master key and are never returned after
+  enrollment except by the one-time enrollment response. Challenge values are hashed in
+  PostgreSQL/SQLite and consumed once. Invalid codes remain explicit and do not create sessions.
+- Applied migration `0018_native_mfa` with explicit approval and restarted the local API.
+
+### Shared organization permission matrix
+
+- Added a central typed role-to-capability matrix for organization view, member management,
+  website verification, crawl and purge operations, AI settings/usage and specialist runs.
+  Existing API role checks now use this matrix for least-privilege decisions; target-specific
+  rules such as admin limits on owner/admin membership changes remain additional checks.
+
+### Account, MFA and retention UI
+
+- Added an Account Security dashboard section for native-account TOTP enrollment,
+  confirmation, disable and active-session revocation.
+- Added MFA challenge handling to the native sign-in form.
+- Added an owner/admin crawl-history purge form with an explicit reason and refreshed history
+  after successful cleanup.
+- MCP tools and CMS workflows remain backend-planned and are not represented as available UI controls.
+
+### Tenant crawl schedules
+
+- Added migration `0019_crawl_schedules` for tenant-scoped daily/weekly crawl cadence.
+- Added owner/admin CRUD API and dashboard controls, and a bounded due-schedule Celery task.
+  Due schedules reserve the tenant crawl budget and dispatch the existing tenant-revalidated
+  crawl task. Redis/Celery execution remains opt-in and no broker is running locally.
 
 ### AI provider endpoints
 

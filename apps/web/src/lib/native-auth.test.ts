@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  confirmPasswordReset, getNativeMethods, requestSignup, signInNative, signOutNative, verifySignup,
+  confirmNativeSignInMfa,
+  confirmPasswordReset, getNativeMethods, listNativeSessions, requestSignup,
+  revokeNativeSession, signInNative, signOutNative, verifySignup,
 } from './native-auth'
 
 afterEach(() => vi.unstubAllGlobals())
@@ -58,5 +60,53 @@ describe('native account API', () => {
       headers: { Authorization: 'Bearer fixture-session' },
       cache: 'no-store',
     }))
+  })
+
+  it('lists and revokes account sessions without exposing tokens', async () => {
+    const sessionId = 'a'.repeat(64)
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify([
+        { session_id: sessionId, expires_at: '2026-01-01T10:00:00Z', is_current: true },
+      ]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetcher)
+    await expect(listNativeSessions('rk1_fixture')).resolves.toEqual([
+      { session_id: sessionId, expires_at: '2026-01-01T10:00:00Z', is_current: true },
+    ])
+    await revokeNativeSession('rk1_fixture', sessionId)
+    expect(fetcher).toHaveBeenLastCalledWith(
+      `/api/v1/auth/sessions/${sessionId}`,
+      expect.objectContaining({
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer rk1_fixture' },
+      }),
+    )
+  })
+
+  it('parses MFA challenges and confirms a challenge session', async () => {
+    const challenge = `rk1_${'a'.repeat(43)}`
+    const accessToken = `rk1_${'b'.repeat(43)}`
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        mfa_required: true,
+        challenge,
+        expires_in: 300,
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        access_token: accessToken,
+        user_id: 'bca7dcf3-908e-4dcf-a985-5cc68f2355ea',
+        expires_in: 3600,
+      }), { status: 200 }))
+    vi.stubGlobal('fetch', fetcher)
+    const { signInNative } = await import('./native-auth')
+    await expect(signInNative('fixture@example.com', 'fixture-password')).resolves.toEqual({
+      mfa_required: true,
+      challenge,
+      expires_in: 300,
+    })
+    await expect(confirmNativeSignInMfa(challenge, '123456')).resolves.toMatchObject({
+      access_token: accessToken,
+      expires_in: 3600,
+    })
   })
 })

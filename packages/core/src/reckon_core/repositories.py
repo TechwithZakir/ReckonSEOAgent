@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from reckon_core.persistence import (
     AuditEvent,
     CrawlRun,
+    CrawlSchedule,
     ExternalIdentity,
     NativeAccount,
     Organization,
@@ -58,6 +59,14 @@ class WebsiteNotVerified(ValueError):
 
 
 class CrawlBudgetExceeded(ValueError):
+    pass
+
+
+class CrawlRetentionLimitExceeded(ValueError):
+    pass
+
+
+class CrawlScheduleNotFound(LookupError):
     pass
 
 
@@ -645,6 +654,250 @@ class SqlAlchemyCrawlRepository:
             )
         )
 
+    def create_schedule(
+        self,
+        organization_id: UUID,
+        website_id: UUID,
+        actor_user_id: UUID,
+        request_id: UUID,
+        frequency: str,
+        active: bool = True,
+    ) -> CrawlSchedule:
+        if frequency not in {"daily", "weekly"}:
+            raise ValueError("The crawl schedule frequency must be daily or weekly.")
+        if type(active) is not bool:
+            raise ValueError("The crawl schedule active state must be boolean.")
+        self._set_tenant(organization_id)
+        website = self._session.scalar(
+            select(Website).where(
+                Website.organization_id == organization_id,
+                Website.id == website_id,
+            )
+        )
+        if website is None:
+            raise WebsiteNotFound
+        if not website.is_verified:
+            raise WebsiteNotVerified
+        existing = self._session.scalar(
+            select(CrawlSchedule).where(
+                CrawlSchedule.organization_id == organization_id,
+                CrawlSchedule.website_id == website_id,
+            )
+        )
+        if existing is not None:
+            existing.frequency = frequency
+            existing.active = active
+            existing.next_run_at = datetime.now(timezone.utc) + (
+                timedelta(days=1)
+                if frequency == "daily"
+                else timedelta(days=7)
+            )
+            self._session.flush()
+            return existing
+        now = datetime.now(timezone.utc)
+        schedule = CrawlSchedule(
+            id=uuid4(),
+            organization_id=organization_id,
+            website_id=website_id,
+            actor_user_id=actor_user_id,
+            frequency=frequency,
+            active=active,
+            next_run_at=now + (
+                timedelta(days=1)
+                if frequency == "daily"
+                else timedelta(days=7)
+            ),
+        )
+        self._session.add(schedule)
+        self._session.add(
+            AuditEvent(
+                organization_id=organization_id,
+                actor_user_id=actor_user_id,
+                action="crawl_schedule.created",
+                resource_type="crawl_schedule",
+                resource_id=schedule.id,
+                request_id=request_id,
+                details={
+                    "site_id": str(website_id),
+                    "frequency": frequency,
+                },
+            )
+        )
+        self._session.flush()
+        return schedule
+
+    def list_schedules(
+        self,
+        organization_id: UUID,
+        website_id: UUID,
+    ) -> list[CrawlSchedule]:
+        self._set_tenant(organization_id)
+        return list(
+            self._session.scalars(
+                select(CrawlSchedule)
+                .where(
+                    CrawlSchedule.organization_id == organization_id,
+                    CrawlSchedule.website_id == website_id,
+                )
+                .order_by(CrawlSchedule.next_run_at)
+            )
+        )
+
+    def update_schedule(
+        self,
+        organization_id: UUID,
+        website_id: UUID,
+        schedule_id: UUID,
+        actor_user_id: UUID,
+        request_id: UUID,
+        active: bool,
+        frequency: str,
+    ) -> CrawlSchedule:
+        if frequency not in {"daily", "weekly"}:
+            raise ValueError("The crawl schedule frequency must be daily or weekly.")
+        if type(active) is not bool:
+            raise ValueError("The crawl schedule active state must be boolean.")
+        self._set_tenant(organization_id)
+        schedule = self._session.scalar(
+            select(CrawlSchedule)
+            .where(
+                CrawlSchedule.organization_id == organization_id,
+                CrawlSchedule.website_id == website_id,
+                CrawlSchedule.id == schedule_id,
+            )
+            .with_for_update()
+        )
+        if schedule is None:
+            raise CrawlScheduleNotFound
+        schedule.frequency = frequency
+        schedule.active = active
+        schedule.next_run_at = datetime.now(timezone.utc) + (
+            timedelta(days=1)
+            if frequency == "daily"
+            else timedelta(days=7)
+        )
+        self._session.add(
+            AuditEvent(
+                organization_id=organization_id,
+                actor_user_id=actor_user_id,
+                action="crawl_schedule.updated",
+                resource_type="crawl_schedule",
+                resource_id=schedule.id,
+                request_id=request_id,
+                details={
+                    "site_id": str(schedule.website_id),
+                    "frequency": frequency,
+                    "active": str(active).lower(),
+                },
+            )
+        )
+        self._session.flush()
+        return schedule
+
+    def delete_schedule(
+        self,
+        organization_id: UUID,
+        website_id: UUID,
+        schedule_id: UUID,
+        actor_user_id: UUID,
+        request_id: UUID,
+    ) -> CrawlSchedule:
+        self._set_tenant(organization_id)
+        schedule = self._session.scalar(
+            select(CrawlSchedule)
+            .where(
+                CrawlSchedule.organization_id == organization_id,
+                CrawlSchedule.website_id == website_id,
+                CrawlSchedule.id == schedule_id,
+            )
+            .with_for_update()
+        )
+        if schedule is None:
+            raise CrawlScheduleNotFound
+        self._session.delete(schedule)
+        self._session.add(
+            AuditEvent(
+                organization_id=organization_id,
+                actor_user_id=actor_user_id,
+                action="crawl_schedule.deleted",
+                resource_type="crawl_schedule",
+                resource_id=schedule.id,
+                request_id=request_id,
+                details={"site_id": str(schedule.website_id)},
+            )
+        )
+        self._session.flush()
+        return schedule
+
+    def purge_before(
+        self,
+        organization_id: UUID,
+        website_id: UUID,
+        actor_user_id: UUID,
+        request_id: UUID,
+        cutoff: datetime,
+        reason: str,
+        max_rows: int = 1000,
+    ) -> int:
+        if type(max_rows) is not int or not 1 <= max_rows <= 1000:
+            raise ValueError("The crawl purge batch limit must be between 1 and 1000.")
+        if (
+            cutoff.tzinfo is None
+            or cutoff.utcoffset() is None
+            or not reason.strip()
+            or len(reason.strip()) > 200
+        ):
+            raise ValueError("A valid cutoff and purge reason are required.")
+        reason = reason.strip()
+        cutoff = cutoff.astimezone(timezone.utc)
+        self._set_tenant(organization_id)
+        website_exists = self._session.scalar(
+            select(Website.id).where(
+                Website.organization_id == organization_id,
+                Website.id == website_id,
+            )
+        )
+        if website_exists is None:
+            raise WebsiteNotFound
+
+        runs = list(
+            self._session.scalars(
+                select(CrawlRun)
+                .where(
+                    CrawlRun.organization_id == organization_id,
+                    CrawlRun.website_id == website_id,
+                    CrawlRun.started_at < cutoff,
+                    CrawlRun.status != "running",
+                )
+                .order_by(CrawlRun.started_at, CrawlRun.id)
+                .limit(max_rows + 1)
+                .with_for_update()
+            )
+        )
+        if len(runs) > max_rows:
+            raise CrawlRetentionLimitExceeded
+
+        ids = [run.id for run in runs]
+        for run in runs:
+            self._session.delete(run)
+        self._session.add(
+            AuditEvent(
+                organization_id=organization_id,
+                actor_user_id=actor_user_id,
+                action="crawl.purged",
+                resource_type="website",
+                resource_id=website_id,
+                request_id=request_id,
+                details={
+                    "cutoff": cutoff.isoformat(),
+                    "deleted_count": str(len(ids)),
+                    "reason": reason,
+                },
+            )
+        )
+        self._session.flush()
+        return len(ids)
+
     def finish(
         self,
         run: CrawlRun,
@@ -697,6 +950,10 @@ class SqlAlchemyCrawlRepository:
             run.sitemap_rejected_count = result.sitemap_rejected_count
             run.sitemap_discovery_truncated = result.sitemap_discovery_truncated
             run.redirect_count = result.redirect_count
+            run.internal_urls = list(result.internal_urls)
+            run.page_evidence = [
+                asdict(item) for item in result.page_evidence
+            ]
             if audit is not None:
                 run.audit_version = audit.version
                 run.audit_findings = [

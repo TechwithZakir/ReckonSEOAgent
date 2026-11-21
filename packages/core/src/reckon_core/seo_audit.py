@@ -17,6 +17,9 @@ HomepageFindingCode = Literal[
     "incomplete_sitemap_analysis",
     "homepage_not_in_sitemap",
     "canonical_not_in_sitemap",
+    "missing_h2",
+    "no_internal_links",
+    "images_missing_alt_text",
 ]
 FindingImpact = Literal["high", "medium", "low"]
 FindingConfidence = Literal["high"]
@@ -277,6 +280,69 @@ def audit_homepage(result: CrawlResult) -> HomepageAudit:
                     verification=(
                         "Fetch the homepage HTML and confirm a primary <h1> appears "
                         "when the page design calls for one."
+                    ),
+                )
+            )
+        if result.h2_count == 0:
+            findings.append(
+                HomepageFinding(
+                    code="missing_h2",
+                    impact="low",
+                    confidence="high",
+                    effort="low",
+                    source_url=result.final_url,
+                    summary="No H2 subheadings were detected in the homepage HTML.",
+                    evidence="The fetched HTML contained zero <h2> elements.",
+                    recommendation=(
+                        "Review the homepage structure and add descriptive H2 "
+                        "sections where useful for readers."
+                    ),
+                    verification=(
+                        "Fetch the homepage HTML and confirm H2 elements organize "
+                        "the intended content sections."
+                    ),
+                )
+            )
+        if result.internal_link_count == 0:
+            findings.append(
+                HomepageFinding(
+                    code="no_internal_links",
+                    impact="low",
+                    confidence="high",
+                    effort="low",
+                    source_url=result.final_url,
+                    summary="No same-host internal links were detected on the homepage.",
+                    evidence="The fetched HTML contained zero same-host HTTP(S) links.",
+                    recommendation=(
+                        "Review key navigation and linking paths and add relevant "
+                        "links to important pages where appropriate."
+                    ),
+                    verification=(
+                        "Fetch the homepage HTML and confirm important same-host "
+                        "navigation links are present."
+                    ),
+                )
+            )
+        if (result.missing_alt_text_count or 0) > 0:
+            findings.append(
+                HomepageFinding(
+                    code="images_missing_alt_text",
+                    impact="medium",
+                    confidence="high",
+                    effort="low",
+                    source_url=result.final_url,
+                    summary="Some homepage images omit alternative text.",
+                    evidence=(
+                        f"{result.missing_alt_text_count} image(s) had no "
+                        "non-empty alt attribute."
+                    ),
+                    recommendation=(
+                        "Provide concise alternative text for meaningful images "
+                        "and use empty alt text for decorative images."
+                    ),
+                    verification=(
+                        "Fetch the homepage HTML and verify every image has an "
+                        "appropriate alt attribute."
                     ),
                 )
             )

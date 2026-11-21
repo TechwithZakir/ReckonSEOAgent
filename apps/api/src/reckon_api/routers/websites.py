@@ -35,6 +35,7 @@ from reckon_core.websites import (
     website_verification_record_name,
     website_verification_record_value,
 )
+from reckon_core.permissions import OrganizationPermission, require_permission
 
 router = APIRouter(
     prefix="/api/v1/organizations/{organization_id}/websites",
@@ -62,8 +63,10 @@ class WebsiteVerificationResponse(BaseModel):
     verification_status: Literal["verified"]
 
 
-def _require_manager(context: TenantContext) -> None:
-    if context.role not in {OrganizationRole.OWNER, OrganizationRole.ADMIN}:
+def _require_permission(context: TenantContext, permission: OrganizationPermission) -> None:
+    try:
+        require_permission(context.role, permission)
+    except TenantAccessDenied:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Organization administrator access is required.",
@@ -129,7 +132,7 @@ def create_website(
     session: Session = Depends(get_database_session),
 ) -> WebsiteResponse:
     context = resolve_organization_access(principal, organization_id, session)
-    _require_manager(context)
+    _require_permission(context, OrganizationPermission.WEBSITE_CREATE)
     try:
         normalized = normalize_website_url(request.url)
     except InvalidWebsiteUrl as error:
@@ -185,7 +188,7 @@ def verify_website(
     session: Session = Depends(get_database_session),
 ) -> WebsiteVerificationResponse:
     context = resolve_organization_access(principal, organization_id, session)
-    _require_manager(context)
+    _require_permission(context, OrganizationPermission.WEBSITE_VERIFY)
     repository = SqlAlchemyWebsiteRepository(session)
     try:
         website = repository.get_for_verification(

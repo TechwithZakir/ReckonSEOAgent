@@ -25,6 +25,7 @@ from reckon_core.tenancy import (
     TenantAccessDenied,
     TenantAccessService,
 )
+from reckon_core.permissions import OrganizationPermission, require_permission
 
 router = APIRouter(prefix="/api/v1/organizations", tags=["organizations"])
 
@@ -109,7 +110,9 @@ def list_organization_members(
     session: Session = Depends(get_database_session),
 ) -> OrganizationMemberPage:
     context = resolve_organization_access(principal, organization_id, session)
-    if context.role not in {OrganizationRole.OWNER, OrganizationRole.ADMIN}:
+    try:
+        require_permission(context.role, OrganizationPermission.MEMBER_VIEW)
+    except TenantAccessDenied:
         raise HTTPException(status_code=403, detail="Organization administrator access is required.")
     try:
         rows, cursor = SqlAlchemyOrganizationRepository(session).list_members(context, limit, after)

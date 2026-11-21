@@ -58,6 +58,31 @@ def test_homepage_audit_reconciles_noindex_signals_and_canonical_targets() -> No
     )
 
 
+def test_homepage_audit_reports_bounded_structural_and_alt_evidence() -> None:
+    result = CrawlResult(
+        final_url="https://example.com/",
+        status_code=200,
+        content_type="text/html",
+        bytes_read=100,
+        title="Example",
+        redirect_count=0,
+        meta_description="Summary",
+        h1_count=1,
+        h2_count=0,
+        internal_link_count=0,
+        image_count=3,
+        missing_alt_text_count=2,
+    )
+
+    audit = audit_homepage(result)
+
+    assert [finding.code for finding in audit.findings] == [
+        "images_missing_alt_text",
+        "missing_h2",
+        "no_internal_links",
+    ]
+
+
 def test_homepage_audit_reports_present_but_invalid_canonical_link() -> None:
     result = CrawlResult(
         final_url="https://example.com/",

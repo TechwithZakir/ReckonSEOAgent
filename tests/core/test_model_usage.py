@@ -244,3 +244,49 @@ def test_usage_inputs_reject_invalid_limits_and_reports() -> None:
             max_input_tokens=0,
             max_output_tokens=1,
         )
+
+
+def test_unknown_usage_requires_prior_evidence_and_explicit_reconciliation(
+    ledger: tuple[sessionmaker[Session], TenantContext, TenantContext],
+) -> None:
+    factory, context, _ = ledger
+    with factory() as session:
+        repository = SqlAlchemyModelUsageRepository(session)
+        reservation, _ = repository.reserve(context, request("unknown-request-001"), 100)
+        session.commit()
+
+        with pytest.raises(ModelUsageConflict):
+            repository.reconcile_unknown(
+                context,
+                reservation.id,
+                uuid4(),
+                ModelUsageReport(input_tokens=20, output_tokens=10),
+                "provider-verification-result-1",
+            )
+
+        repository.record_unknown(
+            context,
+            reservation.id,
+            uuid4(),
+            "adapter_error",
+            125,
+        )
+        reconciled = repository.reconcile_unknown(
+            context,
+            reservation.id,
+            uuid4(),
+            ModelUsageReport(input_tokens=20, output_tokens=10),
+            "provider-verification-result-1",
+        )
+        session.commit()
+        assert reconciled.status == "settled"
+        assert (reconciled.input_tokens, reconciled.output_tokens) == (20, 10)
+
+        rows = repository.list_for_organization(context)
+        assert len(rows) == 1
+        assert rows[0].status == "settled"
+        assert session.scalar(
+            select(func.count(AuditEvent.id)).where(
+                AuditEvent.action == "model_usage.reconciled"
+            )
+        ) == 1

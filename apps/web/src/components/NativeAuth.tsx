@@ -3,7 +3,7 @@ import type { FormEvent } from 'react'
 import { useAuth } from '../auth/AuthContext'
 import {
   confirmPasswordReset, getNativeMethods, requestPasswordReset, requestSignup,
-  signInNative, verifySignup,
+  confirmNativeSignInMfa, signInNative, verifySignup,
 } from '../lib/native-auth'
 import type { NativeMethods } from '../lib/native-auth'
 
@@ -26,6 +26,7 @@ export function NativeAuth({ onSignedIn }: { onSignedIn: () => void }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
+  const [mfaChallenge, setMfaChallenge] = useState<string | null>(null)
 
   useEffect(() => {
     if (window.location.pathname === '/auth/verify' || window.location.pathname === '/auth/reset') {
@@ -45,7 +46,17 @@ export function NativeAuth({ onSignedIn }: { onSignedIn: () => void }) {
     setError(null)
     setMessage(null)
     try {
-      if (mode === 'signup') {
+      if (mfaChallenge) {
+        if (!/^[0-9]{6}$/.test(password)) {
+          setError('Enter a 6-digit MFA code.')
+          return
+        }
+        const session = await confirmNativeSignInMfa(mfaChallenge, password)
+        setMfaChallenge(null)
+        setPassword('')
+        auth.acceptNativeSession(session)
+        onSignedIn()
+      } else if (mode === 'signup') {
         await requestSignup(email)
         setMessage('If eligible, you will receive a verification email.')
       } else if (mode === 'recover') {
@@ -69,9 +80,15 @@ export function NativeAuth({ onSignedIn }: { onSignedIn: () => void }) {
         setMessage(mode === 'verify' ? 'Email verified. You can now sign in.' : 'Password updated. You can now sign in.')
       } else {
         const session = await signInNative(email, password)
-        setPassword('')
-        auth.acceptNativeSession(session)
-        onSignedIn()
+        if ('mfa_required' in session) {
+          setMfaChallenge(session.challenge)
+          setPassword('')
+          setMessage('Enter the 6-digit MFA code to complete sign-in.')
+        } else {
+          setPassword('')
+          auth.acceptNativeSession(session)
+          onSignedIn()
+        }
       }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Account access could not be completed.')
@@ -90,14 +107,30 @@ export function NativeAuth({ onSignedIn }: { onSignedIn: () => void }) {
         <p>{methods ? 'Reckon account sign-in is not enabled on the API.' : 'Checking Reckon account availability…'}</p>
       )}
       <form className="workspace-form" onSubmit={(event) => void submit(event)}>
-        {mode !== 'verify' && mode !== 'reset' && (
+        {mfaChallenge && (
+          <>
+            <label htmlFor="native-mfa-code">MFA code</label>
+            <input
+              id="native-mfa-code"
+              inputMode="numeric"
+              pattern="[0-9]{6}"
+              minLength={6}
+              maxLength={6}
+              required
+              disabled={busy}
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+            />
+          </>
+        )}
+        {!mfaChallenge && mode !== 'verify' && mode !== 'reset' && (
           <>
             <label htmlFor="native-email">Email address</label>
             <input id="native-email" type="email" autoComplete="email" maxLength={320} required disabled={busy || !methods?.enabled}
               value={email} onChange={(event) => setEmail(event.target.value)} />
           </>
         )}
-        {mode !== 'signup' && mode !== 'recover' && (
+        {!mfaChallenge && mode !== 'signup' && mode !== 'recover' && (
           <>
             <label htmlFor="native-password">{mode === 'verify' || mode === 'reset' ? 'Choose a password' : 'Password'}</label>
             <input id="native-password" type="password" autoComplete={mode === 'verify' || mode === 'reset' ? 'new-password' : 'current-password'}
@@ -117,7 +150,7 @@ export function NativeAuth({ onSignedIn }: { onSignedIn: () => void }) {
         {error && <p className="workspace-setup__error" role="alert">{error}</p>}
         {message && <p role="status">{message}</p>}
         <button className="button button--primary" disabled={busy || !methods?.enabled || auth.status === 'initializing'} type="submit">
-          {busy ? 'Working…' : mode === 'verify' ? 'Verify account' : mode === 'signup' ? 'Send verification email'
+          {busy ? 'Working…' : mfaChallenge ? 'Complete MFA sign-in' : mode === 'verify' ? 'Verify account' : mode === 'signup' ? 'Send verification email'
             : mode === 'recover' ? 'Send recovery email' : mode === 'reset' ? 'Reset password' : 'Sign in with email'}
         </button>
       </form>

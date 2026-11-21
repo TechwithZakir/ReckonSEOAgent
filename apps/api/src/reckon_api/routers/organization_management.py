@@ -1,7 +1,7 @@
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, StringConstraints, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -87,6 +87,20 @@ class InvitationAccepted(BaseModel):
     role: OrganizationRole
 
 
+class RenameOrganizationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=200),
+    ]
+
+
+class OrganizationProfileResponse(BaseModel):
+    organization_id: UUID
+    name: str
+    role: OrganizationRole
+
+
 def _change_response(change: OrganizationChange) -> ChangeResponse:
     return ChangeResponse(
         id=change.id, action=change.action, role=change.role, reason=change.reason,
@@ -164,6 +178,39 @@ def approve_change(
         delivery = "smtp_accepted"
     response.headers["Cache-Control"] = "no-store"
     return ApprovalResponse(approved=True, invitation_id=invite_id, notification_status=delivery)
+
+
+@router.patch("/organizations/{organization_id}/profile", response_model=OrganizationProfileResponse)
+def rename_organization(
+    organization_id: UUID,
+    payload: RenameOrganizationRequest,
+    request: Request,
+    response: Response,
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+    session: Session = Depends(get_database_session),
+) -> OrganizationProfileResponse:
+    context = resolve_organization_access(principal, organization_id, session)
+    try:
+        organization = OrganizationManagement(session).rename(
+            context,
+            request.state.request_id,
+            payload.name,
+        )
+        session.commit()
+    except TenantAccessDenied as error:
+        session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This role cannot manage the organization profile.",
+        ) from error
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(error)) from error
+    response.headers["Cache-Control"] = "no-store"
+    return OrganizationProfileResponse(
+        organization_id=organization.id,
+        name=organization.name,
+        role=context.role,
+    )
 
 
 @router.get("/invitations", response_model=list[InvitationSummary])

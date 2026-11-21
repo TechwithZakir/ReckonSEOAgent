@@ -4,7 +4,7 @@ import io
 import socket
 import ssl
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from html.parser import HTMLParser
 from time import monotonic
 from typing import Literal, Protocol
@@ -34,6 +34,7 @@ _MAX_SITEMAP_SECONDS = 4.0
 _MAX_ADDRESS_ATTEMPTS = 2
 _REQUEST_TIMEOUT_SECONDS = 2.0
 _MAX_RUN_SECONDS = 15.0
+_MAX_DISCOVERED_PAGES = 10
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 _USER_AGENT = "ReckonSEOCrawler/0.1 (+https://reckonseo.com/crawler)"
 _ROBOTS_USER_AGENT = "ReckonSEOCrawler"
@@ -119,6 +120,14 @@ SitemapFetchStatus = Literal[
 ]
 SitemapDocumentType = Literal["urlset", "sitemapindex"]
 
+PageFetchStatus = Literal[
+    "fetched",
+    "robots_disallowed",
+    "fetch_unavailable",
+    "fetch_rejected",
+    "unsupported_content_type",
+]
+
 
 @dataclass(frozen=True, slots=True)
 class SitemapEvidence:
@@ -133,6 +142,22 @@ class SitemapEvidence:
     child_sitemap_urls: tuple[str, ...] = ()
     rejected_count: int | None = None
     truncated: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class PageEvidence:
+    url: str
+    status: PageFetchStatus
+    http_status_code: int | None = None
+    content_type: str | None = None
+    bytes_read: int | None = None
+    title: str | None = None
+    meta_description: str | None = None
+    h1_count: int | None = None
+    h2_count: int | None = None
+    internal_link_count: int | None = None
+    image_count: int | None = None
+    missing_alt_text_count: int | None = None
 
 
 class PinnedHttpTransport(Protocol):
@@ -157,6 +182,10 @@ class CrawlResult:
     redirect_count: int
     meta_description: str | None = None
     h1_count: int | None = None
+    h2_count: int | None = None
+    internal_link_count: int | None = None
+    image_count: int | None = None
+    missing_alt_text_count: int | None = None
     meta_robots_noindex: bool | None = None
     x_robots_noindex: bool | None = None
     canonical_url: str | None = None
@@ -167,6 +196,8 @@ class CrawlResult:
     sitemap_rejected_count: int | None = None
     sitemap_discovery_truncated: bool | None = None
     sitemap_evidence: tuple[SitemapEvidence, ...] | None = None
+    internal_urls: tuple[str, ...] = ()
+    page_evidence: tuple[PageEvidence, ...] = ()
 
 
 class _PinnedHTTPConnection(http.client.HTTPConnection):
@@ -314,6 +345,11 @@ class _PageMetadata:
     title: str | None
     description: str | None
     h1_count: int
+    h2_count: int
+    internal_link_count: int
+    image_count: int
+    missing_alt_text_count: int
+    internal_urls: tuple[str, ...]
     robots_noindex: bool | None
     canonical_url: str | None
     canonical_link_count: int
@@ -327,10 +363,19 @@ class _PageMetadataParser(HTMLParser):
         self._title_length = 0
         self._description: str | None = None
         self._h1_count = 0
+        self._h2_count = 0
+        self._internal_link_count = 0
+        self._image_count = 0
+        self._missing_alt_text_count = 0
+        self._internal_urls: list[str] = []
         self._robots_meta_seen = False
         self._robots_noindex = False
+        self._page_url = ""
         self._canonical_href: str | None = None
         self._canonical_link_count = 0
+
+    def set_page_url(self, page_url: str) -> None:
+        self._page_url = page_url
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         normalized_tag = tag.lower()
@@ -343,6 +388,37 @@ class _PageMetadataParser(HTMLParser):
             self._in_title = True
         elif normalized_tag == "h1":
             self._h1_count += 1
+        elif normalized_tag == "h2":
+            self._h2_count += 1
+        elif normalized_tag == "a":
+            href = (attributes.get("href") or "").strip()
+            if href:
+                try:
+                    resolved = urljoin(self._page_url, href)
+                    page_host = urlsplit(self._page_url).hostname
+                    link_host = urlsplit(resolved).hostname
+                    if (
+                        page_host is not None
+                        and link_host is not None
+                        and page_host.casefold() == link_host.casefold()
+                        and urlsplit(resolved).scheme.lower() in {"http", "https"}
+                    ):
+                        self._internal_link_count += 1
+                        try:
+                            normalized, _, _ = _validated_url(resolved, page_host)
+                        except CrawlPolicyError:
+                            normalized = ""
+                        if normalized:
+                            normalized = _without_query(normalized)
+                            if normalized not in self._internal_urls:
+                                self._internal_urls.append(normalized)
+                except ValueError:
+                    pass
+        elif normalized_tag == "img":
+            self._image_count += 1
+            alt = attributes.get("alt")
+            if alt is None or not alt.strip():
+                self._missing_alt_text_count += 1
         elif normalized_tag == "meta" and self._description is None:
             if attributes.get("name", "").casefold() == "description":
                 description = " ".join(
@@ -384,6 +460,26 @@ class _PageMetadataParser(HTMLParser):
     @property
     def h1_count(self) -> int:
         return self._h1_count
+
+    @property
+    def h2_count(self) -> int:
+        return self._h2_count
+
+    @property
+    def internal_link_count(self) -> int:
+        return self._internal_link_count
+
+    @property
+    def image_count(self) -> int:
+        return self._image_count
+
+    @property
+    def missing_alt_text_count(self) -> int:
+        return self._missing_alt_text_count
+
+    @property
+    def internal_urls(self) -> tuple[str, ...]:
+        return tuple(self._internal_urls)
 
     @property
     def robots_noindex(self) -> bool | None:
@@ -542,12 +638,18 @@ def _page_metadata(
     if media_type not in {"text/html", "application/xhtml+xml"}:
         return None
     parser = _PageMetadataParser()
+    parser.set_page_url(page_url)
     parser.feed(body.decode("utf-8", errors="replace"))
     parser.close()
     return _PageMetadata(
         title=parser.title,
         description=parser.description,
         h1_count=parser.h1_count,
+        h2_count=parser.h2_count,
+        internal_link_count=parser.internal_link_count,
+        image_count=parser.image_count,
+        missing_alt_text_count=parser.missing_alt_text_count,
+        internal_urls=parser.internal_urls,
         robots_noindex=parser.robots_noindex,
         canonical_url=_normalized_canonical_url(
             page_url,
@@ -1021,6 +1123,14 @@ class HomepageCrawler:
                 metadata.description if metadata is not None else None
             ),
             h1_count=metadata.h1_count if metadata is not None else None,
+            h2_count=metadata.h2_count if metadata is not None else None,
+            internal_link_count=(
+                metadata.internal_link_count if metadata is not None else None
+            ),
+            image_count=metadata.image_count if metadata is not None else None,
+            missing_alt_text_count=(
+                metadata.missing_alt_text_count if metadata is not None else None
+            ),
             meta_robots_noindex=(
                 metadata.robots_noindex if metadata is not None else None
             ),
@@ -1041,4 +1151,124 @@ class HomepageCrawler:
             sitemap_rejected_count=sitemap_rejected_count,
             sitemap_discovery_truncated=sitemap_discovery_truncated,
             sitemap_evidence=sitemap_evidence,
+            internal_urls=(
+                metadata.internal_urls if metadata is not None else ()
+            ),
         )
+
+    def crawl_pages(
+        self,
+        scheme: str,
+        host: str,
+        max_pages: int = _MAX_DISCOVERED_PAGES,
+    ) -> CrawlResult:
+        if type(max_pages) is not int or not 1 <= max_pages <= _MAX_DISCOVERED_PAGES:
+            raise CrawlPolicyError(
+                "The discovered-page limit must be between 1 and 10."
+            )
+        homepage = self.crawl(scheme, host)
+        deadline = monotonic() + _MAX_RUN_SECONDS
+        robots_parser: RobotFileParser | None = None
+        try:
+            _, robots_response, _ = _fetch_url(
+                f"{scheme}://{host}/robots.txt",
+                host,
+                self._resolver,
+                self._transport,
+                deadline,
+            )
+            if 200 <= robots_response.status_code < 300:
+                robots_parser = RobotFileParser()
+                robots_parser.parse(
+                    robots_response.body.decode("utf-8", errors="replace").splitlines()
+                )
+        except (CrawlUnavailable, CrawlPolicyError, CrawlDisallowed):
+            robots_parser = None
+
+        evidence: list[PageEvidence] = []
+        seen = {homepage.final_url}
+        for page_url in homepage.internal_urls:
+            if len(evidence) >= max_pages:
+                break
+            if page_url in seen:
+                continue
+            seen.add(page_url)
+            if robots_parser is not None and not robots_parser.can_fetch(
+                _ROBOTS_USER_AGENT,
+                page_url,
+            ):
+                evidence.append(
+                    PageEvidence(url=page_url, status="robots_disallowed")
+                )
+                continue
+            if monotonic() >= deadline:
+                evidence.append(
+                    PageEvidence(url=page_url, status="fetch_unavailable")
+                )
+                continue
+            try:
+                final_url, response, _ = _fetch_url(
+                    page_url,
+                    host,
+                    self._resolver,
+                    self._transport,
+                    deadline,
+                    robots_parser=robots_parser,
+                )
+            except CrawlDisallowed:
+                evidence.append(
+                    PageEvidence(url=page_url, status="robots_disallowed")
+                )
+                continue
+            except CrawlPolicyError:
+                evidence.append(
+                    PageEvidence(url=page_url, status="fetch_rejected")
+                )
+                continue
+            except (CrawlUnavailable, CrawlBodyTooLarge):
+                evidence.append(
+                    PageEvidence(url=page_url, status="fetch_unavailable")
+                )
+                continue
+
+            content_type = response.headers.get("content-type", "")
+            media_type = content_type.split(";", 1)[0].strip().lower()
+            if media_type not in {"text/html", "application/xhtml+xml"}:
+                evidence.append(
+                    PageEvidence(
+                        url=_without_query(final_url),
+                        status="unsupported_content_type",
+                        http_status_code=response.status_code,
+                        content_type=content_type,
+                        bytes_read=len(response.body),
+                    )
+                )
+                continue
+            metadata = _page_metadata(content_type, response.body, final_url)
+            evidence.append(
+                PageEvidence(
+                    url=_without_query(final_url),
+                    status="fetched",
+                    http_status_code=response.status_code,
+                    content_type=content_type,
+                    bytes_read=len(response.body),
+                    title=metadata.title if metadata is not None else None,
+                    meta_description=(
+                        metadata.description if metadata is not None else None
+                    ),
+                    h1_count=metadata.h1_count if metadata is not None else None,
+                    h2_count=metadata.h2_count if metadata is not None else None,
+                    internal_link_count=(
+                        metadata.internal_link_count if metadata is not None else None
+                    ),
+                    image_count=(
+                        metadata.image_count if metadata is not None else None
+                    ),
+                    missing_alt_text_count=(
+                        metadata.missing_alt_text_count
+                        if metadata is not None
+                        else None
+                    ),
+                )
+            )
+        return replace(homepage, page_evidence=tuple(evidence))

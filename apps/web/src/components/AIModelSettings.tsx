@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { DEFAULT_MODEL_ENDPOINTS, deleteAISettings, getAISettings, saveAISettings, testAISettings } from '../lib/ai-settings'
-import type { AISettings, ModelProvider } from '../lib/ai-settings'
+import { DEFAULT_MODEL_ENDPOINTS, deleteAISettings, getAISettings, listAIUsage, reconcileAIUsage, saveAISettings, testAISettings } from '../lib/ai-settings'
+import type { AISettings, AIUsageReservation, ModelProvider } from '../lib/ai-settings'
 import type { OrganizationContext } from '../lib/organizations'
 
 export function AIModelSettings({
@@ -19,6 +19,11 @@ export function AIModelSettings({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
+  const [usage, setUsage] = useState<AIUsageReservation[]>([])
+  const [usageError, setUsageError] = useState<string | null>(null)
+  const [verificationReference, setVerificationReference] = useState<Record<string, string>>({})
+  const [inputUsage, setInputUsage] = useState<Record<string, string>>({})
+  const [outputUsage, setOutputUsage] = useState<Record<string, string>>({})
   const manager = organization?.role === 'owner' || organization?.role === 'admin'
   const organizationId = organization?.organization_id
 
@@ -38,6 +43,17 @@ export function AIModelSettings({
       })
     return () => { active = false }
   }, [accessToken, organizationId, manager])
+
+  useEffect(() => {
+    if (!accessToken || !organizationId || !manager) return
+    let active = true
+    void listAIUsage(accessToken, organizationId)
+      .then((rows) => { if (active) setUsage(rows) })
+      .catch((cause: unknown) => {
+        if (active) setUsageError(cause instanceof Error ? cause.message : 'Could not load AI usage.')
+      })
+    return () => { active = false }
+  }, [accessToken, organizationId, manager, message])
 
   const save = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -90,6 +106,31 @@ export function AIModelSettings({
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'AI test could not be completed.')
     } finally { setBusy(false) }
+  }
+
+  const reconcile = async (reservation: AIUsageReservation) => {
+    if (!organizationId) return
+    setBusy(true)
+    setError(null)
+    setMessage(null)
+    try {
+      const reference = verificationReference[reservation.reservation_id] ?? ''
+      const inputTokens = Number(inputUsage[reservation.reservation_id] ?? '0')
+      const outputTokens = Number(outputUsage[reservation.reservation_id] ?? '0')
+      await reconcileAIUsage(
+        accessToken,
+        organizationId,
+        reservation.reservation_id,
+        inputTokens,
+        outputTokens,
+        reference,
+      )
+      setMessage('Unknown usage was reconciled only after an independent verification reference was supplied.')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not reconcile AI usage.')
+    } finally {
+      setBusy(false)
+    }
   }
 
   const unsaved = settings?.configured && (
@@ -182,6 +223,69 @@ export function AIModelSettings({
                 {unsaved && <p>Save your changes before testing.</p>}
               </form>
             </>
+          )}
+          <h3>AI usage</h3>
+          {usageError && <p className="workspace-setup__error" role="alert">{usageError}</p>}
+          {usage.length === 0 && !usageError && <p>No AI usage reservations recorded.</p>}
+          {usage.length > 0 && (
+            <ul>
+              {usage.map((reservation) => (
+                <li key={reservation.reservation_id}>
+                  <strong>{reservation.provider} · {reservation.model}</strong>
+                  <p>Status: {reservation.status}</p>
+                  <p>Maximum: {reservation.max_input_tokens} input / {reservation.max_output_tokens} output tokens</p>
+                  <p>Recorded: {reservation.input_tokens ?? 'Unknown'} input / {reservation.output_tokens ?? 'Unknown'} output tokens</p>
+                  {reservation.status === 'reserved' && (
+                    <div className="ai-settings-form">
+                      <label htmlFor={`reconcile-input-${reservation.reservation_id}`}>Verified input tokens</label>
+                      <input
+                        id={`reconcile-input-${reservation.reservation_id}`}
+                        type="number"
+                        min={0}
+                        value={inputUsage[reservation.reservation_id] ?? '0'}
+                        disabled={busy}
+                        onChange={(event) => setInputUsage((values) => ({
+                          ...values,
+                          [reservation.reservation_id]: event.target.value,
+                        }))}
+                      />
+                      <label htmlFor={`reconcile-output-${reservation.reservation_id}`}>Verified output tokens</label>
+                      <input
+                        id={`reconcile-output-${reservation.reservation_id}`}
+                        type="number"
+                        min={0}
+                        value={outputUsage[reservation.reservation_id] ?? '0'}
+                        disabled={busy}
+                        onChange={(event) => setOutputUsage((values) => ({
+                          ...values,
+                          [reservation.reservation_id]: event.target.value,
+                        }))}
+                      />
+                      <label htmlFor={`reconcile-reference-${reservation.reservation_id}`}>Independent verification reference</label>
+                      <input
+                        id={`reconcile-reference-${reservation.reservation_id}`}
+                        minLength={8}
+                        maxLength={256}
+                        value={verificationReference[reservation.reservation_id] ?? ''}
+                        disabled={busy}
+                        onChange={(event) => setVerificationReference((values) => ({
+                          ...values,
+                          [reservation.reservation_id]: event.target.value,
+                        }))}
+                      />
+                      <button
+                        className="button button--secondary"
+                        type="button"
+                        disabled={busy || (verificationReference[reservation.reservation_id] ?? '').trim().length < 8}
+                        onClick={() => void reconcile(reservation)}
+                      >
+                        Reconcile unknown usage
+                      </button>
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
           )}
         </>
       )}

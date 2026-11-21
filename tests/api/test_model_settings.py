@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 from collections.abc import Iterator
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 import httpx
@@ -95,6 +96,24 @@ def request(
         ) as client:
             return await client.request(
                 method, f"/api/v1/organizations/{organization_id}/ai-settings",
+                headers={"Authorization": f"Bearer {token}"}, json=body,
+            )
+    return asyncio.run(send())
+
+
+def usage_request(
+    app: FastAPI, organization_id: UUID, method: str, token: str = "owner",
+    reservation_id: UUID | None = None, body: dict[str, object] | None = None,
+) -> httpx.Response:
+    async def send() -> httpx.Response:
+        path = f"/api/v1/organizations/{organization_id}/ai-usage"
+        if reservation_id is not None:
+            path += f"/{reservation_id}/reconcile"
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            return await client.request(
+                method, path,
                 headers={"Authorization": f"Bearer {token}"}, json=body,
             )
     return asyncio.run(send())
@@ -395,3 +414,77 @@ def test_ai_test_rejects_missing_or_changed_settings_before_dispatch(
     assert not calls
     with factory() as session:
         assert session.scalar(select(ModelUsageReservation)) is None
+
+
+def test_ai_usage_lists_and_reconciles_only_prior_unknown_reservations(
+    api: tuple[FastAPI, sessionmaker[Session], UUID, UUID],
+) -> None:
+    app, factory, first, second = api
+    with factory() as session:
+        identity = session.scalar(select(ExternalIdentity).where(ExternalIdentity.subject == "owner"))
+        assert identity is not None
+        reservation = ModelUsageReservation(
+            organization_id=first,
+            actor_user_id=identity.user_id,
+            task_id=uuid4(),
+            request_id=uuid4(),
+            idempotency_key="usage-reconcile-001",
+            request_hash="a" * 64,
+            provider="openai",
+            model="fixture-model",
+            max_input_tokens=100,
+            max_output_tokens=50,
+            status="reserved",
+            started_at=datetime.now(timezone.utc),
+        )
+        session.add(reservation)
+        session.flush()
+        session.add(
+            AuditEvent(
+                organization_id=first,
+                actor_user_id=identity.user_id,
+                action="model_usage.outcome_unknown",
+                resource_type="model_usage",
+                resource_id=reservation.id,
+                request_id=uuid4(),
+                details={"task_id": str(reservation.task_id), "reason": "adapter_error", "elapsed_ms": "10"},
+            )
+        )
+        session.commit()
+        reservation_id = reservation.id
+
+    assert usage_request(app, first, "GET", "editor").status_code == 403
+    cross_tenant = usage_request(app, second, "GET", "other-owner")
+    assert cross_tenant.status_code == 200
+    assert cross_tenant.json() == []
+    listed = usage_request(app, first, "GET")
+    assert listed.status_code == 200
+    assert listed.headers["cache-control"] == "no-store"
+    assert listed.json()[0]["status"] == "reserved"
+
+    reconciled = usage_request(
+        app,
+        first,
+        "POST",
+        reservation_id=reservation_id,
+        body={
+            "input_tokens": 20,
+            "output_tokens": 10,
+            "verification_reference": "provider-verification-result-1",
+        },
+    )
+    assert reconciled.status_code == 200
+    assert reconciled.json()["status"] == "settled"
+    assert reconciled.json()["input_tokens"] == 20
+    replay = usage_request(
+        app,
+        first,
+        "POST",
+        reservation_id=reservation_id,
+        body={
+            "input_tokens": 20,
+            "output_tokens": 10,
+            "verification_reference": "provider-verification-result-1",
+        },
+    )
+    assert replay.status_code == 409

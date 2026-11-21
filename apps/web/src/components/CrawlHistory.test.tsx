@@ -39,15 +39,17 @@ const crawl: CrawlResponse = {
   sitemap_rejected_count: 0,
   sitemap_discovery_truncated: false,
   redirect_count: 0,
+  internal_urls: [],
+  page_evidence: [],
 }
 
 describe('crawl history display', () => {
-  it('disables both actions for an unverified website', () => {
+  it('disables crawl and specialist actions for an unverified website', () => {
     const html = renderToStaticMarkup(
       <CrawlHistory accessToken="token" organizationId="org" websiteId={websiteId} verified={false} />,
     )
     expect(html).toContain('Verify this website before crawling')
-    expect(html.match(/disabled=""/g)).toHaveLength(2)
+    expect(html.match(/disabled=""/g)).toHaveLength(3)
     expect(html).not.toContain('token')
   })
 

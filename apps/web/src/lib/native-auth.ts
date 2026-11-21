@@ -1,5 +1,11 @@
 export type NativeMethods = { enabled: boolean; signup_available: boolean; recovery_available: boolean }
 export type NativeSession = { access_token: string; user_id: string; expires_in: number }
+export type AccountSessionSummary = { session_id: string; expires_at: string; is_current: boolean }
+export type NativeSignInResult = NativeSession | {
+  mfa_required: true
+  challenge: string
+  expires_in: number
+}
 
 export class NativeAuthError extends Error {
   readonly status: number
@@ -67,11 +73,29 @@ export async function confirmPasswordReset(token: string, password: string): Pro
   await post('password-reset/confirm', { token, password })
 }
 
-export async function signInNative(email: string, password: string): Promise<NativeSession> {
+export async function signInNative(email: string, password: string): Promise<NativeSignInResult> {
   const response = await post('signin', { email, password })
   const value: unknown = await response.json()
+  if (!value || typeof value !== 'object') {
+    throw new NativeAuthError('The API returned an invalid sign-in response.', response.status)
+  }
+  if ('mfa_required' in value && value.mfa_required === true) {
+    const recordValue = value as Record<string, unknown>
+    if (
+      typeof recordValue.challenge !== 'string' ||
+      !/^rk1_[A-Za-z0-9_-]{43}$/.test(recordValue.challenge) ||
+      typeof recordValue.expires_in !== 'number' ||
+      !Number.isInteger(recordValue.expires_in) ||
+      recordValue.expires_in <= 0 ||
+      recordValue.expires_in > 300
+    ) throw new NativeAuthError('The API returned an invalid MFA challenge.', response.status)
+    return {
+      mfa_required: true,
+      challenge: recordValue.challenge,
+      expires_in: recordValue.expires_in,
+    }
+  }
   if (
-    !value || typeof value !== 'object' ||
     !('access_token' in value) || typeof value.access_token !== 'string' ||
     !/^rk1_[A-Za-z0-9_-]{43}$/.test(value.access_token) ||
     !('user_id' in value) || typeof value.user_id !== 'string' ||
@@ -84,4 +108,103 @@ export async function signInNative(email: string, password: string): Promise<Nat
 
 export async function signOutNative(token: string): Promise<void> {
   await post('signout', undefined, token)
+}
+
+export async function listNativeSessions(token: string): Promise<AccountSessionSummary[]> {
+  const response = await fetch('/api/v1/auth/sessions', {
+    headers: { Authorization: `Bearer ${token}` },
+    cache: 'no-store',
+  })
+  if (!response.ok) {
+    throw new NativeAuthError('Account sessions could not be loaded.', response.status)
+  }
+  const value: unknown = await response.json()
+  if (!Array.isArray(value)) {
+    throw new NativeAuthError('The API returned invalid account sessions.', response.status)
+  }
+  const uuidHash = /^[0-9a-f]{64}$/i
+  const date = /^\d{4}-\d{2}-\d{2}T/
+  if (!value.every((row) =>
+    row && typeof row === 'object' &&
+    'session_id' in row && typeof row.session_id === 'string' && uuidHash.test(row.session_id) &&
+    'expires_at' in row && typeof row.expires_at === 'string' && date.test(row.expires_at) &&
+    'is_current' in row && typeof row.is_current === 'boolean')) {
+    throw new NativeAuthError('The API returned invalid account sessions.', response.status)
+  }
+  return value as AccountSessionSummary[]
+}
+
+export async function revokeNativeSession(token: string, sessionId: string): Promise<void> {
+  if (!/^[0-9a-f]{64}$/i.test(sessionId)) {
+    throw new NativeAuthError('Invalid account session.', 422)
+  }
+  const response = await fetch(
+    `/api/v1/auth/sessions/${encodeURIComponent(sessionId)}`,
+    {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+      cache: 'no-store',
+    },
+  )
+  if (!response.ok) {
+    throw new NativeAuthError(
+      response.status === 404
+        ? 'The account session was not found.'
+        : 'The account session could not be revoked.',
+      response.status,
+    )
+  }
+}
+
+export async function confirmNativeSignInMfa(
+  challenge: string,
+  code: string,
+): Promise<NativeSession> {
+  const response = await post('signin/mfa', { challenge, code })
+  const value: unknown = await response.json()
+  if (
+    !value || typeof value !== 'object' ||
+    !('access_token' in value) || typeof value.access_token !== 'string' ||
+    !/^rk1_[A-Za-z0-9_-]{43}$/.test(value.access_token) ||
+    !('user_id' in value) || typeof value.user_id !== 'string' ||
+    !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value.user_id) ||
+    !('expires_in' in value) || typeof value.expires_in !== 'number' ||
+    value.expires_in !== 3600
+  ) throw new NativeAuthError('The API returned an invalid MFA session.', response.status)
+  return { access_token: value.access_token, user_id: value.user_id, expires_in: value.expires_in }
+}
+
+export async function getMfaStatus(token: string): Promise<{ enabled: boolean }> {
+  const response = await fetch('/api/v1/auth/mfa', {
+    headers: { Authorization: `Bearer ${token}` },
+    cache: 'no-store',
+  })
+  if (!response.ok) throw new NativeAuthError('MFA status could not be loaded.', response.status)
+  const value: unknown = await response.json()
+  if (!value || typeof value !== 'object' || !('enabled' in value) || typeof value.enabled !== 'boolean') {
+    throw new NativeAuthError('The API returned invalid MFA status.', response.status)
+  }
+  return { enabled: value.enabled }
+}
+
+export async function enrollMfa(
+  token: string,
+): Promise<{ secret: string; otpauth_uri: string }> {
+  const response = await post('mfa/enroll', undefined, token)
+  const value: unknown = await response.json()
+  const recordValue = value as Record<string, unknown> | null
+  if (
+    !recordValue ||
+    typeof recordValue.secret !== 'string' ||
+    typeof recordValue.otpauth_uri !== 'string'
+  ) throw new NativeAuthError('The API returned invalid MFA enrollment.', response.status)
+  return { secret: recordValue.secret, otpauth_uri: recordValue.otpauth_uri }
+}
+
+export async function confirmMfa(token: string, code: string): Promise<void> {
+  await post('mfa/confirm', { code }, token)
+}
+
+export async function disableMfa(token: string, code: string): Promise<void> {
+  await post('mfa/disable', { code }, token)
 }

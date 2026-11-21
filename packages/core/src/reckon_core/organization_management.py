@@ -17,6 +17,7 @@ from reckon_core.repositories import IdempotencyConflict
 from reckon_core.tenancy import (
     AuthenticatedPrincipal, OrganizationRole, TenantAccessDenied, TenantContext,
 )
+from reckon_core.permissions import OrganizationPermission, require_permission
 
 
 class OrganizationChangeConflict(ValueError):
@@ -35,6 +36,39 @@ class OrganizationManagement:
     def __init__(self, session: Session) -> None:
         self._session = session
         self._postgres = session.get_bind().dialect.name == "postgresql"
+
+    def rename(
+        self,
+        context: TenantContext,
+        request_id: UUID,
+        name: str,
+    ) -> Organization:
+        name = name.strip()
+        if len(name) < 1 or len(name) > 200:
+            raise ValueError("The organization name must contain 1 to 200 characters.")
+        manager_role = self._lock_manager(context)
+        require_permission(manager_role, OrganizationPermission.PROFILE_UPDATE)
+        organization = self._session.scalar(
+            select(Organization)
+            .where(Organization.id == context.organization_id)
+            .with_for_update()
+        )
+        if organization is None:
+            raise TenantAccessDenied
+        organization.name = name
+        self._session.add(
+            AuditEvent(
+                organization_id=context.organization_id,
+                actor_user_id=context.principal.user_id,
+                action="organization.profile_updated",
+                resource_type="organization",
+                resource_id=context.organization_id,
+                request_id=request_id,
+                details={"name": name},
+            )
+        )
+        self._session.flush()
+        return organization
 
     def _scope(self, org_id: UUID | None, user_id: UUID | None = None) -> None:
         if self._postgres:

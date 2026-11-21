@@ -2,13 +2,30 @@
 
 import json
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from sqlalchemy import select, text
+from sqlalchemy.orm import Session, sessionmaker
 
-from reckon_core.model_gateway import ModelGatewayRequest, ModelMessage
+from reckon_core.model_gateway import (
+    ModelExecutionPolicy,
+    ModelGatewayRequest,
+    ModelMessage,
+    ModelOutcomeUnknown,
+    ModelProviderResult,
+)
+from reckon_core.model_usage import ModelUsageReport
+from reckon_core.persistence import AuditEvent, CrawlRun
+from reckon_core.repositories import SqlAlchemyMembershipRepository
 from reckon_core.seo_audit import FindingConfidence, FindingEffort, FindingImpact, HomepageFindingCode
+from reckon_core.tenancy import (
+    OrganizationRole,
+    TenantAccessDenied,
+    TenantContext,
+)
+from reckon_core.permissions import OrganizationPermission, require_permission
 
 _SKILL_FILES = (
     "technical_seo/skills_technical_audit.md",
@@ -63,6 +80,204 @@ class AgentDefinition(BaseModel):
 
 class InvalidAgentOutput(ValueError):
     pass
+
+
+class AgentRunResult(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    status: Literal["completed", "unknown", "invalid_output"]
+    ordered_codes: tuple[HomepageFindingCode, ...] | None = None
+    reservation_id: UUID | None = None
+    usage: ModelUsageReport | None = None
+
+
+class SpecialistGateway(Protocol):
+    async def execute(
+        self,
+        context: TenantContext,
+        task_id: UUID,
+        request_id: UUID,
+        idempotency_key: str,
+        request: ModelGatewayRequest,
+    ) -> ModelProviderResult:
+        """Execute only through the bounded model gateway."""
+
+
+class SpecialistPrioritizationAuthorizer:
+    """Trusted task policy: read-only, no tools, bounded model and token limits."""
+
+    def __init__(self, policy: ModelExecutionPolicy) -> None:
+        self._policy = policy
+
+    def authorize(
+        self,
+        context: TenantContext,
+        task_id: UUID,
+        request: ModelGatewayRequest,
+    ) -> ModelExecutionPolicy:
+        require_permission(context.role, OrganizationPermission.AGENT_RUN)
+        if type(task_id) is not UUID:
+            raise ValueError("The specialist task ID must be typed.")
+        if request.provider != self._policy.provider or request.model != self._policy.model:
+            raise ValueError("The specialist request is outside its task policy.")
+        return self._policy
+
+
+class GovernedPrioritizationAgent:
+    """Bind deterministic crawl evidence to one read-only, bounded specialist run."""
+
+    def __init__(
+        self,
+        session_factory: sessionmaker[Session],
+        skills_root: Path,
+        gateway: SpecialistGateway,
+        provider: str,
+        model: str,
+    ) -> None:
+        self._session_factory = session_factory
+        self._skills_root = skills_root
+        self._gateway = gateway
+        self._provider = provider
+        self._model = model
+
+    def _load_evidence(
+        self,
+        session: Session,
+        context: TenantContext,
+        website_id: UUID,
+        crawl_id: UUID,
+    ) -> PrioritizationInput:
+        role = SqlAlchemyMembershipRepository(session).role_for_active_membership(
+            context.principal.user_id,
+            context.organization_id,
+        )
+        if role is None or role != context.role:
+            raise TenantAccessDenied
+        if session.get_bind().dialect.name == "postgresql":
+            session.execute(
+                text("SELECT set_config('app.org_id', :organization_id, true)"),
+                {"organization_id": str(context.organization_id)},
+            )
+        crawl = session.scalar(
+            select(CrawlRun).where(
+                CrawlRun.organization_id == context.organization_id,
+                CrawlRun.website_id == website_id,
+                CrawlRun.id == crawl_id,
+            )
+        )
+        if crawl is None:
+            raise LookupError("The tenant crawl evidence was not found.")
+        if crawl.status != "completed" or crawl.audit_findings is None:
+            raise LookupError("The crawl has no reconciled completed evidence.")
+
+        findings: list[FindingForPrioritization] = []
+        for finding in crawl.audit_findings:
+            try:
+                findings.append(
+                    FindingForPrioritization(
+                        code=finding["code"],
+                        impact=finding["impact"],
+                        confidence=finding["confidence"],
+                        effort=finding["effort"],
+                    )
+                )
+            except (KeyError, ValidationError):
+                raise LookupError("The crawl evidence does not match the audit contract.") from None
+        if not findings:
+            raise LookupError("The completed crawl has no findings to prioritize.")
+        return PrioritizationInput(
+            website_id=website_id,
+            crawl_id=crawl_id,
+            findings=tuple(findings),
+        )
+
+    def _record(
+        self,
+        session: Session,
+        context: TenantContext,
+        request_id: UUID,
+        crawl_id: UUID,
+        task_id: UUID,
+        action: str,
+        details: dict[str, str],
+    ) -> None:
+        session.add(
+            AuditEvent(
+                organization_id=context.organization_id,
+                actor_user_id=context.principal.user_id,
+                action=action,
+                resource_type="agent_run",
+                resource_id=task_id,
+                request_id=request_id,
+                details={
+                    "crawl_id": str(crawl_id),
+                    "agent": "technical-audit-prioritizer",
+                    **details,
+                },
+            )
+        )
+
+    async def execute(
+        self,
+        context: TenantContext,
+        website_id: UUID,
+        crawl_id: UUID,
+        task_id: UUID,
+        request_id: UUID,
+        idempotency_key: str,
+    ) -> AgentRunResult:
+        with self._session_factory() as session:
+            agent_input = self._load_evidence(
+                session, context, website_id, crawl_id,
+            )
+            self._record(
+                session, context, request_id, crawl_id, task_id,
+                "agent.run.started", {"status": "started"},
+            )
+            session.commit()
+
+        request = build_prioritization_request(
+            self._skills_root, self._provider, self._model, agent_input,
+        )
+        try:
+            result = await self._gateway.execute(
+                context, task_id, request_id, idempotency_key, request,
+            )
+        except ModelOutcomeUnknown as error:
+            with self._session_factory() as session:
+                self._record(
+                    session, context, request_id, crawl_id, task_id,
+                    "agent.run.outcome_unknown",
+                    {"status": "unknown", "reservation_id": str(error.reservation_id)},
+                )
+                session.commit()
+            return AgentRunResult(
+                status="unknown",
+                reservation_id=error.reservation_id,
+            )
+
+        with self._session_factory() as session:
+            try:
+                output = validate_prioritization_output(agent_input, result.text)
+            except InvalidAgentOutput as error:
+                self._record(
+                    session, context, request_id, crawl_id, task_id,
+                    "agent.run.invalid_output",
+                    {"status": "invalid_output", "reason": str(error)},
+                )
+                session.commit()
+                return AgentRunResult(status="invalid_output")
+            self._record(
+                session, context, request_id, crawl_id, task_id,
+                "agent.run.completed",
+                {"status": "completed"},
+            )
+            session.commit()
+        return AgentRunResult(
+            status="completed",
+            ordered_codes=output.ordered_codes,
+            usage=result.usage,
+        )
 
 
 def build_prioritization_request(

@@ -24,6 +24,21 @@ export type SitemapEvidence = {
   canonical_url_listed?: boolean | null
 }
 
+export type PageEvidence = {
+  url: string
+  status: 'fetched' | 'robots_disallowed' | 'fetch_unavailable' | 'fetch_rejected' | 'unsupported_content_type'
+  http_status_code: number | null
+  content_type: string | null
+  bytes_read: number | null
+  title: string | null
+  meta_description: string | null
+  h1_count: number | null
+  h2_count: number | null
+  internal_link_count: number | null
+  image_count: number | null
+  missing_alt_text_count: number | null
+}
+
 export type CrawlResponse = {
   crawl_id: string
   website_id: string
@@ -50,6 +65,8 @@ export type CrawlResponse = {
   sitemap_rejected_count: number | null
   sitemap_discovery_truncated: boolean | null
   redirect_count: number | null
+  internal_urls: string[]
+  page_evidence: PageEvidence[]
   error_code: string | null
 }
 
@@ -81,7 +98,8 @@ function isFinding(value: unknown): value is CrawlFinding {
     ['non_success_http_status', 'missing_title', 'missing_meta_description', 'missing_h1',
       'noindex_directive', 'invalid_canonical_url', 'multiple_canonical_links',
       'cross_host_canonical', 'empty_sitemap', 'incomplete_sitemap_analysis',
-      'homepage_not_in_sitemap', 'canonical_not_in_sitemap'].includes(value.code as string) &&
+      'homepage_not_in_sitemap', 'canonical_not_in_sitemap', 'missing_h2',
+      'no_internal_links', 'images_missing_alt_text'].includes(value.code as string) &&
     ['high', 'medium', 'low'].includes(value.impact as string) &&
     value.confidence === 'high' && ['low', 'medium'].includes(value.effort as string) &&
     ['code', 'confidence', 'effort', 'source_url', 'summary', 'evidence', 'recommendation', 'verification']
@@ -100,6 +118,17 @@ function isSitemapEvidence(value: unknown): value is SitemapEvidence {
     strings(value.child_sitemap_urls) && typeof value.truncated === 'boolean'
 }
 
+function isPageEvidence(value: unknown): value is PageEvidence {
+  if (!record(value) || typeof value.url !== 'string') return false
+  return ['fetched', 'robots_disallowed', 'fetch_unavailable', 'fetch_rejected', 'unsupported_content_type'].includes(value.status as string) &&
+    nullableNumber(value.http_status_code) &&
+    nullableString(value.content_type) &&
+    nullableNumber(value.bytes_read) &&
+    nullableString(value.title) &&
+    nullableString(value.meta_description) &&
+    ['h1_count', 'h2_count', 'internal_link_count', 'image_count', 'missing_alt_text_count'].every((key) => nullableNumber(value[key]))
+}
+
 function isCrawl(value: unknown, websiteId: string): value is CrawlResponse {
   if (!record(value)) return false
   return typeof value.crawl_id === 'string' && uuid.test(value.crawl_id) &&
@@ -111,7 +140,10 @@ function isCrawl(value: unknown, websiteId: string): value is CrawlResponse {
     ['meta_robots_noindex', 'x_robots_noindex', 'sitemap_discovery_truncated'].every((key) => nullableBoolean(value[key])) &&
     (value.findings === null || (Array.isArray(value.findings) && value.findings.every(isFinding))) &&
     (value.sitemap_urls === null || strings(value.sitemap_urls)) &&
-    (value.sitemap_evidence === null || (Array.isArray(value.sitemap_evidence) && value.sitemap_evidence.every(isSitemapEvidence)))
+    (value.sitemap_evidence === null || (Array.isArray(value.sitemap_evidence) && value.sitemap_evidence.every(isSitemapEvidence))) &&
+    strings(value.internal_urls) &&
+    Array.isArray(value.page_evidence) &&
+    value.page_evidence.every(isPageEvidence)
 }
 
 function endpoint(organizationId: string, websiteId: string): string {
@@ -168,4 +200,207 @@ export async function startCrawl(
     throw new CrawlApiError('The API did not confirm a finished crawl.', response.status)
   }
   return result
+}
+
+export type PrioritizationResponse = {
+  status: 'completed' | 'unknown' | 'invalid_output'
+  ordered_codes: string[] | null
+  reservation_id: string | null
+  input_tokens: number | null
+  output_tokens: number | null
+}
+
+export async function prioritizeCrawl(
+  token: string,
+  organizationId: string,
+  websiteId: string,
+  crawlId: string,
+  idempotencyKey: string,
+  fetcher: typeof fetch = fetch,
+): Promise<PrioritizationResponse> {
+  if (!/^[A-Za-z0-9._:-]{8,128}$/.test(idempotencyKey)) {
+    throw new Error('Invalid specialist idempotency key.')
+  }
+  const response = await fetcher(
+    `${endpoint(organizationId, websiteId)}/crawls/${encodeURIComponent(crawlId)}/prioritize`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Idempotency-Key': idempotencyKey },
+      cache: 'no-store',
+    },
+  )
+  if (!response.ok) {
+    throw new CrawlApiError(
+      response.status === 502
+        ? 'The specialist result could not be verified.'
+        : response.status === 429
+          ? 'The organization has reached its AI token budget.'
+          : `Specialist prioritization failed (HTTP ${response.status}).`,
+      response.status,
+    )
+  }
+  const data: unknown = await response.json()
+  if (!record(data) ||
+      !['completed', 'unknown', 'invalid_output'].includes(data.status as string) ||
+      !(data.ordered_codes === null || (Array.isArray(data.ordered_codes) && data.ordered_codes.every((code) => typeof code === 'string'))) ||
+      !(data.reservation_id === null || (typeof data.reservation_id === 'string' && uuid.test(data.reservation_id))) ||
+      !(data.input_tokens === null || (typeof data.input_tokens === 'number' && Number.isSafeInteger(data.input_tokens) && data.input_tokens >= 0)) ||
+      !(data.output_tokens === null || (typeof data.output_tokens === 'number' && Number.isSafeInteger(data.output_tokens) && data.output_tokens >= 0))) {
+    throw new CrawlApiError('The API returned invalid specialist output.', response.status)
+  }
+  return data as PrioritizationResponse
+}
+
+export type PurgeCrawlHistoryResponse = {
+  deleted_count: number
+  cutoff: string
+  retention_days: number
+}
+
+export async function purgeCrawlHistory(
+  token: string,
+  organizationId: string,
+  websiteId: string,
+  reason: string,
+  fetcher: typeof fetch = fetch,
+): Promise<PurgeCrawlHistoryResponse> {
+  if (!reason.trim() || reason.trim().length < 3 || reason.trim().length > 200) {
+    throw new CrawlApiError('A purge reason containing 3 to 200 characters is required.', 422)
+  }
+  const response = await fetcher(
+    `${endpoint(organizationId, websiteId)}/crawls/purge`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ reason: reason.trim() }),
+      cache: 'no-store',
+    },
+  )
+  if (!response.ok) {
+    throw new CrawlApiError(
+      response.status === 403
+        ? 'Only organization owners and admins can purge crawl history.'
+        : `Crawl history could not be purged (HTTP ${response.status}).`,
+      response.status,
+    )
+  }
+  const data: unknown = await response.json()
+  if (
+    !record(data) ||
+    typeof data.deleted_count !== 'number' ||
+    !Number.isSafeInteger(data.deleted_count) ||
+    data.deleted_count < 0 ||
+    typeof data.cutoff !== 'string' ||
+    typeof data.retention_days !== 'number' ||
+    !Number.isSafeInteger(data.retention_days)
+  ) {
+    throw new CrawlApiError('The API returned invalid crawl purge output.', response.status)
+  }
+  return data as PurgeCrawlHistoryResponse
+}
+
+export type CrawlSchedule = {
+  schedule_id: string
+  website_id: string
+  frequency: 'daily' | 'weekly'
+  active: boolean
+  next_run_at: string
+  last_run_id: string | null
+  created_at: string
+}
+
+function isCrawlSchedule(value: unknown): value is CrawlSchedule {
+  return record(value) &&
+    typeof value.schedule_id === 'string' &&
+    uuid.test(value.schedule_id) &&
+    typeof value.website_id === 'string' &&
+    uuid.test(value.website_id) &&
+    (value.frequency === 'daily' || value.frequency === 'weekly') &&
+    typeof value.active === 'boolean' &&
+    typeof value.next_run_at === 'string' &&
+    date(value.next_run_at) &&
+    (value.last_run_id === null ||
+      (typeof value.last_run_id === 'string' && uuid.test(value.last_run_id))) &&
+    typeof value.created_at === 'string' &&
+    date(value.created_at)
+}
+
+export async function listCrawlSchedules(
+  token: string,
+  organizationId: string,
+  websiteId: string,
+  fetcher: typeof fetch = fetch,
+): Promise<CrawlSchedule[]> {
+  const response = await fetcher(
+    `${endpoint(organizationId, websiteId)}/crawl-schedules`,
+    { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' },
+  )
+  if (!response.ok) {
+    throw new CrawlApiError(`Crawl schedules could not be loaded (HTTP ${response.status}).`, response.status)
+  }
+  const data: unknown = await response.json()
+  if (!Array.isArray(data) || !data.every(isCrawlSchedule)) {
+    throw new CrawlApiError('The API returned invalid crawl schedules.', response.status)
+  }
+  return data
+}
+
+export async function saveCrawlSchedule(
+  token: string,
+  organizationId: string,
+  websiteId: string,
+  frequency: 'daily' | 'weekly',
+  active: boolean,
+  scheduleId: string | null = null,
+  fetcher: typeof fetch = fetch,
+): Promise<CrawlSchedule> {
+  const path = `${endpoint(organizationId, websiteId)}/crawl-schedules${scheduleId ? `/${encodeURIComponent(scheduleId)}` : ''}`
+  const response = await fetcher(path, {
+    method: scheduleId ? 'PATCH' : 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ frequency, active }),
+    cache: 'no-store',
+  })
+  if (!response.ok) {
+    throw new CrawlApiError(
+      response.status === 403
+        ? 'Only organization owners and admins can manage crawl schedules.'
+        : `Crawl schedule could not be saved (HTTP ${response.status}).`,
+      response.status,
+    )
+  }
+  const data: unknown = await response.json()
+  if (!isCrawlSchedule(data)) {
+    throw new CrawlApiError('The API returned invalid crawl schedule output.', response.status)
+  }
+  return data
+}
+
+export async function deleteCrawlSchedule(
+  token: string,
+  organizationId: string,
+  websiteId: string,
+  scheduleId: string,
+  fetcher: typeof fetch = fetch,
+): Promise<void> {
+  const response = await fetcher(
+    `${endpoint(organizationId, websiteId)}/crawl-schedules/${encodeURIComponent(scheduleId)}`,
+    {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+      cache: 'no-store',
+    },
+  )
+  if (!response.ok) {
+    throw new CrawlApiError(
+      `Crawl schedule could not be deleted (HTTP ${response.status}).`,
+      response.status,
+    )
+  }
 }

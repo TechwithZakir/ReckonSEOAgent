@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { listOrganizationMembers } from '../lib/organizations'
+import { listOrganizationMembers, renameOrganization } from '../lib/organizations'
 import type { OrganizationContext, OrganizationMemberPage } from '../lib/organizations'
 import { approveChange, proposeChange } from '../lib/organization-management'
 import type { Proposal, ProposalInput } from '../lib/organization-management'
@@ -23,6 +23,7 @@ export function OrganizationMembers({
   const [reason, setReason] = useState('')
   const [proposal, setProposal] = useState<Proposal | null>(null)
   const [result, setResult] = useState<string | null>(null)
+  const [profileName, setProfileName] = useState('')
   const key = useRef(crypto.randomUUID())
   useEffect(() => {
     let active = true
@@ -42,6 +43,21 @@ export function OrganizationMembers({
       setPage({ items: [...page.items, ...next.items], next_cursor: next.next_cursor })
     } catch {
       setMembersError('Could not load more organization members.')
+    } finally {
+      setBusy(false)
+    }
+  }
+  const updateProfile = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setBusy(true)
+    setError(null)
+    setResult(null)
+    try {
+      await renameOrganization(accessToken, organization.organization_id, profileName)
+      setResult('Organization profile updated.')
+      setProfileName('')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not update the organization profile.')
     } finally {
       setBusy(false)
     }
@@ -105,6 +121,26 @@ export function OrganizationMembers({
             onClick={() => { setPage(null); setMembersError(null); setRetry((value) => value + 1) }}>
             Retry members
           </button>
+        </>
+      )}
+      {(organization.role === 'owner' || organization.role === 'admin') && (
+        <>
+          <h3>Organization profile</h3>
+          <form className="workspace-form" onSubmit={(event) => void updateProfile(event)}>
+            <label htmlFor="organization-profile-name">Organization name</label>
+            <input
+              id="organization-profile-name"
+              minLength={1}
+              maxLength={200}
+              required
+              value={profileName}
+              disabled={busy}
+              onChange={(event) => setProfileName(event.target.value)}
+            />
+            <button className="button button--secondary" disabled={busy} type="submit">
+              Update name
+            </button>
+          </form>
         </>
       )}
       <h3>Manage access</h3>

@@ -36,20 +36,32 @@ see [LICENSE](./LICENSE). The package metadata uses `LicenseRef-Proprietary`.
 - [x] Add tenant-scoped website registration with idempotent creation.
 - [x] Verify website control using an exact DNS TXT challenge before enabling site status.
 - [ ] Configure a real OIDC client and verify an end-to-end sign-in.
-- [ ] Expand audit coverage and usage limits.
+- [x] Expand homepage audit coverage and usage limits.
 - [x] Add a responsive React dashboard shell with live API/database health checks.
 - [x] Add an internal tenant-scoped model-token ledger and provider-neutral gateway boundary.
 - [x] Add typed composition and output validation for a read-only technical audit prioritizer.
 - [x] Add organization AI settings for OpenAI or Anthropic with encrypted API-key storage.
+- [x] Add tenant-visible AI usage records and evidence-bound unknown-outcome reconciliation.
+- [x] Add dashboard AI usage visibility, reconciliation controls and specialist prioritization controls.
+- [x] Add native account session listing and per-session revocation APIs.
+- [x] Add encrypted TOTP MFA enrollment, challenge sign-in and disable APIs.
+- [x] Add account-security, MFA challenge, session revocation and crawl-retention UI controls.
+- [x] Add a shared typed organization permission matrix for tenant operations.
+- [x] Add tenant crawl schedules for daily/weekly cadence with owner/admin CRUD and opt-in due-worker execution.
 - [x] Add dashboard authentication and organization setup.
 - [x] Add owner/admin website onboarding and DNS verification UI.
 - [x] Add verified-site crawling, crawl history and audit evidence to the dashboard.
+- [x] Add bounded depth-one same-host page discovery and page-evidence contracts.
+- [x] Apply migration `0017_multi_page_crawl_evidence` for retained discovered URLs and page evidence.
+- [x] Add opt-in Redis/Celery crawl dispatch with tenant revalidation and queue-failure reconciliation.
+- [x] Add explicit owner/admin crawl-history retention purge, bounded to 1000 runs and protected against running deletion.
 - [x] Add a bounded DNS resolution gate that rejects non-public crawl targets.
 - [x] Add an isolated single-homepage crawler core with pinned-IP requests and bounded redirects.
 - [x] Add tenant-authorized, metered homepage crawling with robots enforcement and history.
 - [x] Capture versioned deterministic homepage audit findings with source evidence.
 - [x] Parse bounded robots.txt sitemap XML and persist URL/index counts as evidence.
-- [ ] Expand the first homepage checks into broader technical SEO audits and dashboard workflows.
+- [x] Run the read-only technical audit prioritizer through a tenant-bound gateway with typed output and unknown-outcome reconciliation.
+- [x] Expand homepage checks with H2 structure, same-host links and image alt-text evidence.
 
 The liveness endpoint confirms only that the API process responds. The readiness endpoint
 checks the configured database. Authenticated organization access requires database

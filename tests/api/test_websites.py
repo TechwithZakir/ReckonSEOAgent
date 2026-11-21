@@ -77,6 +77,27 @@ class StaticHomepageCrawler:
         return self.outcome
 
 
+class FixtureCrawlQueue:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, UUID]] = []
+
+    def enqueue(
+        self,
+        organization_id: UUID,
+        website_id: UUID,
+        run_id: UUID,
+        actor_user_id: UUID,
+        request_id: UUID,
+    ) -> None:
+        self.calls.append({
+            "organization_id": organization_id,
+            "website_id": website_id,
+            "run_id": run_id,
+            "actor_user_id": actor_user_id,
+            "request_id": request_id,
+        })
+
+
 def test_sitemap_evidence_response_defaults_membership_for_older_history() -> None:
     evidence = SitemapEvidenceResponse(
         url="https://example.com/sitemap.xml",
@@ -683,6 +704,178 @@ def test_crawl_audit_findings_are_stored_and_replayed_from_history(
         assert run.x_robots_noindex is False
         assert run.canonical_url == "https://other.example.net/preferred"
         assert run.canonical_link_count == 2
+
+
+def test_worker_queue_reserves_then_returns_running_without_sync_fetch(
+    website_api: tuple[FastAPI, sessionmaker[Session], UUID],
+) -> None:
+    app, factory, organization_id = website_api
+    website_id = register_verified_website(app, factory, organization_id)
+    queue = FixtureCrawlQueue()
+    app.state.crawl_queue = queue
+    crawler = StaticHomepageCrawler(
+        CrawlResult(
+            final_url="https://crawl.example.com/",
+            status_code=200,
+            content_type="text/html",
+            bytes_read=0,
+            title="Should not execute",
+            redirect_count=0,
+        )
+    )
+    app.state.homepage_crawler = crawler
+
+    response = asyncio.run(
+        website_request(
+            app,
+            "POST",
+            (
+                f"/api/v1/organizations/{organization_id}/websites/"
+                f"{website_id}/crawl"
+            ),
+            token="editor-token",
+            idempotency_key="crawl-worker-001",
+        )
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "running"
+    assert response.json()["completed_at"] is None
+    assert crawler.calls == []
+    assert len(queue.calls) == 1
+    call = queue.calls[0]
+    assert call["organization_id"] == organization_id
+    assert call["website_id"] == website_id
+    assert call["run_id"] == UUID(response.json()["crawl_id"])
+
+
+def test_explicit_crawl_history_purge_is_manager_only_and_keeps_running(
+    website_api: tuple[FastAPI, sessionmaker[Session], UUID],
+) -> None:
+    app, factory, organization_id = website_api
+    app.state.settings = Settings(
+        _env_file=None,
+        environment="test",
+        crawl_history_retention_days=30,
+    )
+    website_id = register_verified_website(app, factory, organization_id)
+    with factory() as session:
+        actor_user_id = session.scalar(
+            select(ExternalIdentity.user_id).where(
+                ExternalIdentity.subject == "owner-subject"
+            )
+        )
+        assert actor_user_id is not None
+        old_completed = CrawlRun(
+            organization_id=organization_id,
+            website_id=website_id,
+            actor_user_id=actor_user_id,
+            request_id=uuid4(),
+            idempotency_key="old-crawl-completed-001",
+            request_hash="a" * 64,
+            status="completed",
+            started_at=datetime.now(timezone.utc) - timedelta(days=31),
+            completed_at=datetime.now(timezone.utc) - timedelta(days=31),
+        )
+        old_running = CrawlRun(
+            organization_id=organization_id,
+            website_id=website_id,
+            actor_user_id=actor_user_id,
+            request_id=uuid4(),
+            idempotency_key="old-crawl-running-001",
+            request_hash="b" * 64,
+            status="running",
+            started_at=datetime.now(timezone.utc) - timedelta(days=31),
+        )
+        session.add_all((old_completed, old_running))
+        session.commit()
+        old_completed_id = old_completed.id
+        old_running_id = old_running.id
+
+    async def run() -> None:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            path = (
+                f"/api/v1/organizations/{organization_id}/websites/"
+                f"{website_id}/crawls/purge"
+            )
+            denied = await client.post(
+                path,
+                headers={"Authorization": "Bearer editor-token"},
+                json={"reason": "Approved retention cleanup"},
+            )
+            assert denied.status_code == 403
+            purged = await client.post(
+                path,
+                headers={"Authorization": "Bearer owner-token"},
+                json={"reason": "Approved retention cleanup"},
+            )
+            assert purged.status_code == 200
+            assert purged.headers["cache-control"] == "no-store"
+            assert purged.json()["deleted_count"] == 1
+            assert purged.json()["retention_days"] == 30
+
+    asyncio.run(run())
+    with factory() as session:
+        assert session.get(CrawlRun, old_completed_id) is None
+        assert session.get(CrawlRun, old_running_id) is not None
+        purge_event = session.scalar(
+            select(AuditEvent).where(AuditEvent.action == "crawl.purged")
+        )
+        assert purge_event is not None
+        assert purge_event.details["deleted_count"] == "1"
+        assert purge_event.details["reason"] == "Approved retention cleanup"
+
+
+def test_crawl_schedule_crud_is_manager_only_and_tenant_scoped(
+    website_api: tuple[FastAPI, sessionmaker[Session], UUID],
+) -> None:
+    app, factory, organization_id = website_api
+    website_id = register_verified_website(app, factory, organization_id)
+    path = (
+        f"/api/v1/organizations/{organization_id}/websites/"
+        f"{website_id}/crawl-schedules"
+    )
+
+    async def run() -> None:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            denied = await client.post(
+                path,
+                headers={"Authorization": "Bearer editor-token"},
+                json={"frequency": "daily", "active": True},
+            )
+            assert denied.status_code == 403
+            created = await client.post(
+                path,
+                headers={"Authorization": "Bearer owner-token"},
+                json={"frequency": "daily", "active": True},
+            )
+            assert created.status_code == 200
+            schedule_id = created.json()["schedule_id"]
+            listed = await client.get(
+                path,
+                headers={"Authorization": "Bearer editor-token"},
+            )
+            assert listed.status_code == 200
+            assert len(listed.json()) == 1
+            updated = await client.patch(
+                f"{path}/{schedule_id}",
+                headers={"Authorization": "Bearer owner-token"},
+                json={"frequency": "weekly", "active": False},
+            )
+            assert updated.status_code == 200
+            assert updated.json()["frequency"] == "weekly"
+            assert updated.json()["active"] is False
+            deleted = await client.delete(
+                f"{path}/{schedule_id}",
+                headers={"Authorization": "Bearer owner-token"},
+            )
+            assert deleted.status_code == 204
+
+    asyncio.run(run())
 
 
 def test_stale_crawl_is_recovered_but_recent_run_remains_in_progress(

@@ -21,7 +21,8 @@ from reckon_core.repositories import (
     SqlAlchemyMembershipRepository,
     utc_day,
 )
-from reckon_core.tenancy import TenantAccessDenied, TenantContext
+from reckon_core.tenancy import OrganizationRole, TenantAccessDenied, TenantContext
+from reckon_core.permissions import OrganizationPermission, require_permission
 
 UnknownReason = Literal[
     "timeout", "adapter_error", "adapter_cancelled", "invalid_result", "caller_cancelled"
@@ -277,3 +278,85 @@ class SqlAlchemyModelUsageRepository:
             )
         )
         self._session.flush()
+
+    def list_for_organization(
+        self,
+        context: TenantContext,
+        limit: int = 100,
+    ) -> list[ModelUsageReservation]:
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("The usage page size must be between 1 and 100.")
+        require_permission(context.role, OrganizationPermission.AI_USAGE_VIEW)
+        self._lock_organization(context)
+        return list(
+            self._session.scalars(
+                select(ModelUsageReservation)
+                .where(ModelUsageReservation.organization_id == context.organization_id)
+                .order_by(
+                    ModelUsageReservation.started_at.desc(),
+                    ModelUsageReservation.id.desc(),
+                )
+                .limit(limit)
+            )
+        )
+
+    def reconcile_unknown(
+        self,
+        context: TenantContext,
+        reservation_id: UUID,
+        request_id: UUID,
+        report: ModelUsageReport,
+        verification_reference: str,
+    ) -> ModelUsageReservation:
+        require_permission(context.role, OrganizationPermission.AI_USAGE_RECONCILE)
+        if (
+            not verification_reference
+            or len(verification_reference) > 256
+            or verification_reference.strip() != verification_reference
+        ):
+            raise ValueError("A verification reference is required.")
+        self._lock_organization(context)
+        reservation = self._session.scalar(
+            select(ModelUsageReservation)
+            .where(
+                ModelUsageReservation.organization_id == context.organization_id,
+                ModelUsageReservation.id == reservation_id,
+            )
+            .with_for_update()
+        )
+        if reservation is None:
+            raise ModelReservationNotFound
+        if reservation.status != "reserved":
+            raise ModelUsageConflict
+        unknown = self._session.scalar(
+            select(AuditEvent.id).where(
+                AuditEvent.organization_id == context.organization_id,
+                AuditEvent.action == "model_usage.outcome_unknown",
+                AuditEvent.resource_type == "model_usage",
+                AuditEvent.resource_id == reservation_id,
+            )
+        )
+        if unknown is None:
+            raise ModelUsageConflict
+        reservation.status = "settled"
+        reservation.input_tokens = report.input_tokens
+        reservation.output_tokens = report.output_tokens
+        reservation.settled_at = datetime.now(timezone.utc)
+        self._session.add(
+            AuditEvent(
+                organization_id=context.organization_id,
+                actor_user_id=context.principal.user_id,
+                action="model_usage.reconciled",
+                resource_type="model_usage",
+                resource_id=reservation.id,
+                request_id=request_id,
+                details={
+                    "task_id": str(reservation.task_id),
+                    "input_tokens": str(report.input_tokens),
+                    "output_tokens": str(report.output_tokens),
+                    "verification_reference": verification_reference,
+                },
+            )
+        )
+        self._session.flush()
+        return reservation

@@ -1,6 +1,11 @@
 import hashlib
+import base64
+import binascii
+import hmac
 import re
 import secrets
+import struct
+import time
 from datetime import datetime, timedelta, timezone
 from threading import BoundedSemaphore
 from typing import Literal
@@ -16,7 +21,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from reckon_core.persistence import (
-    NativeAccount, NativeAuthEvent, NativeAuthRateLimit, NativePasswordReset, NativeSession,
+    NativeAccount, NativeAuthEvent, NativeAuthRateLimit, NativeMfaChallenge,
+    NativePasswordReset, NativeSession,
     NativeVerification, PlatformAdministrator, User,
 )
 from reckon_core.tenancy import AuthenticatedPrincipal
@@ -41,6 +47,10 @@ class InvalidNativeCredentials(ValueError):
 
 
 class InvalidPasswordReset(ValueError):
+    pass
+
+
+class InvalidMfa(ValueError):
     pass
 
 
@@ -99,6 +109,33 @@ def _digest(value: str) -> str:
 
 def _valid_token(token: str) -> bool:
     return bool(_TOKEN_PATTERN.fullmatch(token))
+
+
+def generate_mfa_secret() -> str:
+    return base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
+
+
+def verify_totp(secret: str, code: str, now: int | None = None) -> bool:
+    if not re.fullmatch(r"[0-9]{6}", code):
+        return False
+    try:
+        key = base64.b32decode(secret + "=" * ((8 - len(secret) % 8) % 8), casefold=True)
+    except (ValueError, binascii.Error):
+        return False
+    counter_time = int(time.time()) if now is None else now
+    for offset in (-1, 0, 1):
+        counter = (counter_time // 30) + offset
+        digest = hmac.new(
+            key,
+            struct.pack(">Q", counter),
+            "sha1",
+        ).digest()
+        offset_byte = digest[-1] & 15
+        binary = struct.unpack(">I", digest[offset_byte:offset_byte + 4])[0] & 0x7FFFFFFF
+        candidate = f"{binary % 1_000_000:06d}"
+        if hmac.compare_digest(candidate, code):
+            return True
+    return False
 
 
 class NativeAuthRepository:
@@ -314,6 +351,83 @@ class NativeAuthRepository:
             return None
         return AuthenticatedPrincipal(user_id, "reckon-native", str(user_id))
 
+    def begin_mfa_signin(
+        self,
+        email: str,
+        password: str,
+        request_id: UUID,
+    ) -> tuple[str, UUID] | None:
+        account = self._session.scalar(
+            select(NativeAccount).where(NativeAccount.email == email).with_for_update()
+        )
+        if not verify_password(password, account.password_hash if account else None) or account is None:
+            raise InvalidNativeCredentials
+        if not account.mfa_enabled or account.mfa_secret_cipher is None:
+            return None
+        challenge = _SESSION_PREFIX + secrets.token_urlsafe(32)
+        now = datetime.now(timezone.utc)
+        self._session.add(NativeMfaChallenge(
+            challenge_hash=_digest(challenge),
+            user_id=account.user_id,
+            expires_at=now + timedelta(minutes=5),
+        ))
+        self._session.add(NativeAuthEvent(
+            user_id=account.user_id,
+            request_id=request_id,
+            action="session.mfa_challenge",
+        ))
+        self._session.flush()
+        return challenge, account.user_id
+
+    def confirm_mfa_signin(
+        self,
+        challenge: str,
+        code: str,
+        secret: str,
+        request_id: UUID,
+    ) -> tuple[str, UUID]:
+        if not challenge.startswith(_SESSION_PREFIX) or not _valid_token(challenge[len(_SESSION_PREFIX):]):
+            raise InvalidMfa
+        now = datetime.now(timezone.utc)
+        entry = self._session.scalar(
+            select(NativeMfaChallenge)
+            .where(
+                NativeMfaChallenge.challenge_hash == _digest(challenge),
+                NativeMfaChallenge.consumed_at.is_(None),
+                NativeMfaChallenge.expires_at > now,
+            )
+            .with_for_update()
+        )
+        if entry is None or not verify_totp(secret, code):
+            raise InvalidMfa
+        entry.consumed_at = now
+        token = _SESSION_PREFIX + secrets.token_urlsafe(32)
+        self._session.add(NativeSession(
+            token_hash=_digest(token),
+            user_id=entry.user_id,
+            expires_at=now + timedelta(hours=1),
+        ))
+        self._session.add(NativeAuthEvent(
+            user_id=entry.user_id,
+            request_id=request_id,
+            action="session.created",
+        ))
+        self._session.flush()
+        return token, entry.user_id
+
+    def set_mfa_secret(
+        self,
+        user_id: UUID,
+        ciphertext: bytes,
+        enabled: bool,
+    ) -> None:
+        account = self._session.get(NativeAccount, user_id)
+        if account is None:
+            raise InvalidMfa
+        account.mfa_secret_cipher = ciphertext
+        account.mfa_enabled = enabled
+        self._session.flush()
+
     def revoke(self, token: str, user_id: UUID, request_id: UUID) -> None:
         entry = self._session.scalar(
             select(NativeSession)
@@ -328,6 +442,56 @@ class NativeAuthRepository:
                 user_id=user_id, request_id=request_id, action="session.revoked"
             ))
         self._session.flush()
+
+    def list_sessions(
+        self,
+        user_id: UUID,
+        current_token: str,
+    ) -> list[tuple[str, datetime, bool]]:
+        current_hash = _digest(current_token)
+        now = datetime.now(timezone.utc)
+        rows = self._session.scalars(
+            select(NativeSession)
+            .where(
+                NativeSession.user_id == user_id,
+                NativeSession.expires_at > now,
+                NativeSession.revoked_at.is_(None),
+            )
+            .order_by(NativeSession.expires_at.desc())
+            .limit(50)
+        ).all()
+        return [
+            (row.token_hash, row.expires_at, hmac.compare_digest(row.token_hash, current_hash))
+            for row in rows
+        ]
+
+    def revoke_session(
+        self,
+        user_id: UUID,
+        session_id: str,
+        request_id: UUID,
+    ) -> bool:
+        if not re.fullmatch(r"[0-9a-f]{64}", session_id):
+            raise InvalidNativeCredentials
+        entry = self._session.scalar(
+            select(NativeSession)
+            .where(
+                NativeSession.token_hash == session_id,
+                NativeSession.user_id == user_id,
+                NativeSession.revoked_at.is_(None),
+            )
+            .with_for_update()
+        )
+        if entry is None:
+            raise InvalidNativeCredentials
+        entry.revoked_at = datetime.now(timezone.utc)
+        self._session.add(NativeAuthEvent(
+            user_id=user_id,
+            request_id=request_id,
+            action="session.revoked",
+        ))
+        self._session.flush()
+        return True
 
 
 def is_native_token(token: str) -> bool:

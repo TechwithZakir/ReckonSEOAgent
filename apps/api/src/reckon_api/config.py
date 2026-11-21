@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     oidc_audience: str | None = None
     oidc_jwks_url: str | None = None
     crawl_daily_limit: int = Field(default=10, ge=1)
+    crawl_history_retention_days: int = Field(default=365, ge=30, le=3650)
+    crawl_worker_enabled: bool = False
+    crawl_broker_url: str | None = None
     ai_test_daily_token_limit: int = Field(default=10000, ge=640)
     credential_encryption_key: SecretStr | None = None
     native_auth_enabled: bool = False
@@ -33,6 +36,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def require_production_integrations(self) -> "Settings":
+        if self.crawl_worker_enabled and not self.crawl_broker_url:
+            raise ValueError("A Redis/Celery broker is required when crawl workers are enabled.")
         oidc_values = (
             self.oidc_issuer,
             self.oidc_audience,

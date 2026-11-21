@@ -172,3 +172,41 @@ export async function getOrganizationContext(
   )
   return readContext(response)
 }
+
+export async function renameOrganization(
+  accessToken: string,
+  organizationId: string,
+  name: string,
+  fetcher: typeof fetch = fetch,
+): Promise<OrganizationContext & { name: string }> {
+  if (!name.trim() || name.trim().length > 200) {
+    throw new OrganizationApiError('The organization name must contain 1 to 200 characters.', 422)
+  }
+  const response = await fetcher(
+    `/api/v1/organizations/${encodeURIComponent(organizationId)}/profile`,
+    {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ name: name.trim() }),
+    },
+  )
+  if (!response.ok) {
+    throw new OrganizationApiError(
+      `Could not update the organization profile (HTTP ${response.status}).`,
+      response.status,
+    )
+  }
+  const payload: unknown = await response.json()
+  if (
+    !payload ||
+    typeof payload !== 'object' ||
+    typeof (payload as Record<string, unknown>).name !== 'string' ||
+    !isOrganizationContext(payload)
+  ) {
+    throw new OrganizationApiError('The API returned an invalid organization profile.', response.status)
+  }
+  return payload as OrganizationContext & { name: string }
+}
