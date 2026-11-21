@@ -45,8 +45,13 @@ see [LICENSE](./LICENSE). The package metadata uses `LicenseRef-Proprietary`.
 - [x] Add dashboard AI usage visibility, reconciliation controls and specialist prioritization controls.
 - [x] Add native account session listing and per-session revocation APIs.
 - [x] Add encrypted TOTP MFA enrollment, challenge sign-in and disable APIs.
+- [x] Add one-time hashed MFA recovery codes with UI rotation and consumption.
+- [x] Add read-only platform-admin inventory and audit event operations.
+- [x] Add governed SEO action proposals, approval, fixture execution, verification and rollback lifecycle.
 - [x] Add account-security, MFA challenge, session revocation and crawl-retention UI controls.
 - [x] Add a shared typed organization permission matrix for tenant operations.
+- [x] Add typed keyword, content, ecommerce, enterprise, media/query and GEO engine audits from crawl evidence.
+- [x] Add explicit unavailable states for LinkPilot and local SEO until provider/business-profile data is configured.
 - [x] Add local Redis/Celery execution and read-only tenant MCP tool discovery.
 - [x] Add provider-neutral CMS discovery with public-DNS-pinned WordPress support; writes require approval.
 - [x] Add tenant crawl schedules for daily/weekly cadence with owner/admin CRUD and opt-in due-worker execution.

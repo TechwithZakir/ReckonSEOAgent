@@ -88,6 +88,7 @@ class MfaChallengeResponse(BaseModel):
 
 class MfaStatusResponse(BaseModel):
     enabled: bool
+    recovery_codes_remaining: int
 
 
 class MfaEnrollResponse(BaseModel):
@@ -95,11 +96,15 @@ class MfaEnrollResponse(BaseModel):
     otpauth_uri: str = Field(repr=False)
 
 
+class MfaRecoveryCodesResponse(BaseModel):
+    codes: tuple[str, ...] = Field(repr=False)
+
+
 class MfaCodeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     code: Annotated[
         str,
-        StringConstraints(pattern=r"^[0-9]{6}$"),
+        StringConstraints(pattern=r"^(?:[0-9]{6}|[0-9A-F]{12})$"),
     ]
 
 
@@ -343,7 +348,16 @@ def get_mfa_status(
     session: Session = Depends(get_database_session),
 ) -> MfaStatusResponse:
     account = session.get(NativeAccount, principal.user_id)
-    return MfaStatusResponse(enabled=bool(account is not None and account.mfa_enabled))
+    if account is None:
+        return MfaStatusResponse(enabled=False, recovery_codes_remaining=0)
+    return MfaStatusResponse(
+        enabled=bool(account.mfa_enabled),
+        recovery_codes_remaining=(
+            NativeAuthRepository(session).recovery_code_count(principal.user_id)
+            if account.mfa_enabled
+            else 0
+        ),
+    )
 
 
 @router.post("/mfa/enroll", response_model=MfaEnrollResponse)
@@ -468,6 +482,24 @@ def native_signout(
     except InvalidNativeCredentials as error:
         raise HTTPException(status_code=401, detail="The session is invalid.") from error
     return Response(status_code=204)
+
+
+@router.post("/mfa/recovery-codes", response_model=MfaRecoveryCodesResponse)
+def rotate_mfa_recovery_codes(
+    request: Request,
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+    session: Session = Depends(get_database_session),
+) -> MfaRecoveryCodesResponse:
+    _require_enabled(request)
+    account = session.get(NativeAccount, principal.user_id)
+    if account is None or not account.mfa_enabled:
+        raise HTTPException(status_code=409, detail="MFA must be enabled before recovery codes are generated.")
+    codes = NativeAuthRepository(session).replace_mfa_recovery_codes(
+        principal.user_id,
+        request.state.request_id,
+    )
+    session.commit()
+    return MfaRecoveryCodesResponse(codes=codes)
 
 
 @router.get("/sessions", response_model=list[AccountSessionSummary])

@@ -235,7 +235,10 @@ def test_native_mfa_enrollment_challenge_and_disable(
             )
             access_token = signed_in.json()["access_token"]
             headers = {"Authorization": f"Bearer {access_token}"}
-            assert (await client.get("/api/v1/auth/mfa", headers=headers)).json() == {"enabled": False}
+            assert (await client.get("/api/v1/auth/mfa", headers=headers)).json() == {
+                "enabled": False,
+                "recovery_codes_remaining": 0,
+            }
             enrolled = await client.post("/api/v1/auth/mfa/enroll", headers=headers)
             assert enrolled.status_code == 200
             secret = enrolled.json()["secret"]
@@ -247,7 +250,10 @@ def test_native_mfa_enrollment_challenge_and_disable(
                 json={"code": code},
             )
             assert confirmed.status_code == 204
-            assert (await client.get("/api/v1/auth/mfa", headers=headers)).json() == {"enabled": True}
+            assert (await client.get("/api/v1/auth/mfa", headers=headers)).json() == {
+                "enabled": True,
+                "recovery_codes_remaining": 0,
+            }
 
             challenged = await client.post(
                 "/api/v1/auth/signin",
@@ -273,7 +279,69 @@ def test_native_mfa_enrollment_challenge_and_disable(
             assert (await client.get(
                 "/api/v1/auth/mfa",
                 headers={"Authorization": f"Bearer {mfa_token}"},
-            )).json() == {"enabled": False}
+            )).json() == {
+                "enabled": False,
+                "recovery_codes_remaining": 0,
+            }
+
+    asyncio.run(run())
+
+
+def test_native_mfa_recovery_codes_are_one_time(
+    native_api: tuple[FastAPI, sessionmaker[Session], FixtureMailer],
+) -> None:
+    app, factory, mailer = native_api
+
+    async def run() -> None:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            assert (await client.post("/api/v1/auth/signup", json={"email": EMAIL})).status_code == 202
+            verify_token = mailer.sent[-1][1]
+            assert (await client.post(
+                "/api/v1/auth/verify",
+                json={"token": verify_token, "password": PASSWORD},
+            )).status_code == 204
+            signed_in = await client.post(
+                "/api/v1/auth/signin",
+                json={"email": EMAIL, "password": PASSWORD},
+            )
+            access_token = signed_in.json()["access_token"]
+            headers = {"Authorization": f"Bearer {access_token}"}
+
+            enrolled = await client.post("/api/v1/auth/mfa/enroll", headers=headers)
+            secret = enrolled.json()["secret"]
+            code = totp_code(secret)
+            assert (await client.post(
+                "/api/v1/auth/mfa/confirm",
+                headers=headers,
+                json={"code": code},
+            )).status_code == 204
+            rotated = await client.post("/api/v1/auth/mfa/recovery-codes", headers=headers)
+            assert rotated.status_code == 200
+            codes = rotated.json()["codes"]
+            assert len(codes) == 10
+
+            challenged = await client.post(
+                "/api/v1/auth/signin",
+                json={"email": EMAIL, "password": PASSWORD},
+            )
+            challenge = challenged.json()["challenge"]
+            recovery = await client.post(
+                "/api/v1/auth/signin/mfa",
+                json={"challenge": challenge, "code": codes[0]},
+            )
+            assert recovery.status_code == 200
+
+            challenge_again = await client.post(
+                "/api/v1/auth/signin",
+                json={"email": EMAIL, "password": PASSWORD},
+            )
+            replay = await client.post(
+                "/api/v1/auth/signin/mfa",
+                json={"challenge": challenge_again.json()["challenge"], "code": codes[0]},
+            )
+            assert replay.status_code == 400
 
     asyncio.run(run())
 

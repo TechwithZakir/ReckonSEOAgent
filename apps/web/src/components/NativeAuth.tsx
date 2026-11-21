@@ -47,8 +47,8 @@ export function NativeAuth({ onSignedIn }: { onSignedIn: () => void }) {
     setMessage(null)
     try {
       if (mfaChallenge) {
-        if (!/^[0-9]{6}$/.test(password)) {
-          setError('Enter a 6-digit MFA code.')
+        if (!/^(?:[0-9]{6}|[0-9A-F]{12})$/.test(password)) {
+          setError('Enter a 6-digit MFA code or 12-character recovery code.')
           return
         }
         const session = await confirmNativeSignInMfa(mfaChallenge, password)
@@ -113,9 +113,9 @@ export function NativeAuth({ onSignedIn }: { onSignedIn: () => void }) {
             <input
               id="native-mfa-code"
               inputMode="numeric"
-              pattern="[0-9]{6}"
+              pattern="[0-9]{6}|[0-9A-F]{12}"
               minLength={6}
-              maxLength={6}
+              maxLength={12}
               required
               disabled={busy}
               value={password}

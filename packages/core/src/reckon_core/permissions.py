@@ -16,8 +16,12 @@ class OrganizationPermission(str, Enum):
     AI_SETTINGS_MANAGE = "ai_settings.manage"
     AI_USAGE_VIEW = "ai_usage.view"
     AI_USAGE_RECONCILE = "ai_usage.reconcile"
+    AUDIT_VIEW = "audit.view"
     AGENT_RUN = "agent.run"
     PROFILE_UPDATE = "profile.update"
+    SEO_ACTION_PROPOSE = "seo_action.propose"
+    SEO_ACTION_APPROVE = "seo_action.approve"
+    SEO_ACTION_EXECUTE = "seo_action.execute"
 
 
 _ROLE_PERMISSIONS: dict[OrganizationRole, frozenset[OrganizationPermission]] = {
@@ -35,8 +39,12 @@ _ROLE_PERMISSIONS: dict[OrganizationRole, frozenset[OrganizationPermission]] = {
         OrganizationPermission.AI_SETTINGS_MANAGE,
         OrganizationPermission.AI_USAGE_VIEW,
         OrganizationPermission.AI_USAGE_RECONCILE,
+        OrganizationPermission.AUDIT_VIEW,
         OrganizationPermission.AGENT_RUN,
         OrganizationPermission.PROFILE_UPDATE,
+        OrganizationPermission.SEO_ACTION_PROPOSE,
+        OrganizationPermission.SEO_ACTION_APPROVE,
+        OrganizationPermission.SEO_ACTION_EXECUTE,
     }),
     OrganizationRole.EDITOR: frozenset({
         OrganizationPermission.ORGANIZATION_VIEW,

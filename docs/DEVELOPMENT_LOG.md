@@ -117,6 +117,16 @@ milestone details here.
   enrollment except by the one-time enrollment response. Challenge values are hashed in
   PostgreSQL/SQLite and consumed once. Invalid codes remain explicit and do not create sessions.
 - Applied migration `0018_native_mfa` with explicit approval and restarted the local API.
+- Added one-time MFA recovery codes. Codes are hashed at rest, regenerated in a batch, shown
+  once in the Account Security UI and consumed atomically with MFA sign-in. Applied migration
+  `0020_native_mfa_recovery` with explicit approval.
+
+### Platform administration operations
+
+- Added platform-admin-only read-only summary and audit event routes. Summary data covers
+  organizations, active memberships, native accounts and active native sessions. Audit events
+  are bounded and ordered newest-first. Regular users receive 403 and unauthenticated callers
+  receive 401; no tenant impersonation or mutation is available.
 
 ### Shared organization permission matrix
 
@@ -124,6 +134,15 @@ milestone details here.
   website verification, crawl and purge operations, AI settings/usage and specialist runs.
   Existing API role checks now use this matrix for least-privilege decisions; target-specific
   rules such as admin limits on owner/admin membership changes remain additional checks.
+
+### Evidence-only SEO engine verticals
+
+- Added typed audit engines for keyword intent review, content studio, ecommerce, enterprise,
+  media/query and emerging GEO analysis. Findings come only from crawl/page evidence and never
+  fabricate search volume, rankings or answer-engine mentions.
+- Added explicit unavailable states for LinkPilot and local SEO until approved provider or
+  verified business-profile data is configured. Added the tenant-bound
+  `/engines/{engine}` API and dashboard engine panels.
 
 ### Account, MFA and retention UI
 
@@ -154,6 +173,14 @@ milestone details here.
 - Real OIDC, SMTP, provider API keys and WordPress application passwords remain intentionally
   unconfigured. `.env.example` contains names only; secrets belong in the local `.env` or
   organization credential storage and must never be committed.
+
+### Approved SEO action lifecycle
+
+- Added immutable, tenant-scoped SEO action proposals with exact target-version binding,
+  before/proposed/after/verification/rollback state, risk, expiry and approval hashes.
+- Added approve/reject/execute/verify/rollback API routes and an Approval Inbox UI.
+- Execution is disabled without a confirmed executor. Test environments use a fixture executor
+  that verifies proposed state and restores before-state; no real CMS write is performed.
 
 ### AI provider endpoints
 
@@ -638,3 +665,77 @@ milestone details here.
   tenant crawl limits, robots.txt policy, a user-facing crawl result, and transport-level
   verification of aggregate deadlines before exposing fetches. Keep OIDC provider configuration
   as a sign-in test dependency only; it is not a development prerequisite.
+
+## WordPress staging executor and MCP proposal tool — 2026-11-21
+
+- Added `WordPressActionExecutor` (`reckon_core/wordpress_executor.py`): single-field
+  (`heading` → post/page `title`) REST writes bound to the one configured HTTPS site. It
+  pins every request to a public DNS answer, never follows redirects, checks the live
+  `modified_gmt` and before-value against the approved proposal, confirms each write by an
+  independent read-back, and refuses rollback if the value changed after execution. Other
+  action types fail closed until explicitly mapped.
+- The executor is created only when `RECKON_CMS_WORDPRESS_EXECUTION_ENABLED=true` together
+  with the WordPress credentials, and never in `production` or `test`. Credentials are
+  global to the deployment, so use a dedicated staging site; execution additionally requires
+  a verified website whose host equals the action target host.
+- Proposals must target the selected website's host; execute and rollback re-check that the
+  website is verified.
+- Added MCP tool `reckon.seo_action.propose`: creates a pending proposal only (manager role,
+  no high-risk, idempotent, audited with `channel: mcp`) and withholds the approval hash;
+  approval and execution stay on the human lifecycle API.
+- Removed a duplicate SEO action router registration.
+- Validation: `python -m pytest tests -q` passed (281 tests). No real WordPress request was
+  made; tests use mock transports. The running API was not restarted.
+- Still open: live staging WordPress credentials and a real drill, MCP OAuth scopes, backup/restore drill, browser egress isolation.
+
+## Claude plugin execution via Reckon SEO Copilot MCP — 2026-11-21
+
+- Decision: WordPress changes are performed by the Claude plugin, not by Reckon's REST
+  executor. The direct `WordPressActionExecutor` stays disabled by default and is only used,
+  when explicitly enabled, as Reckon's independent read-back verifier.
+- New MCP tools (manager role, tenant-scoped, audited with `channel: mcp`):
+  `reckon.seo_action.approved.list` (unexpired approved actions per website),
+  `reckon.seo_action.claim` (approved → executing; a second claim returns 409 so only one
+  executor writes) and `reckon.seo_action.report` (`executed` or `failed` plus the state the
+  plugin observed).
+- A report moves the action to `verified` only if Reckon's own verifier read-back confirms
+  it. With no verifier configured the action stays `executed` (unverified) and the response
+  has `verified_by_reckon: false`. A mismatch marks it `failed`. Repeating an identical
+  report is idempotent; a different one returns 409. Rollback remains available to managers.
+- Known limit: a claimed action whose plugin never reports stays `executing`; an operator
+  must resolve it manually.
+- Validation: `python -m pytest tests -q` passed (283 tests). The running API was not
+  restarted; no real request was made.
+
+## Reckon SEO Copilot Claude plugin — 2026-11-21
+
+- Added read MCP tools `reckon.website.evidence.get` (latest or chosen completed crawl,
+  response flagged `untrusted_content`) and `reckon.engine.audit.get`. Both need crawl-view
+  access and are tenant-scoped; the 404 for another tenant's website matches existing routes.
+- Added `plugins/reckon-seo-copilot`: Claude plugin manifest, `.mcp.json`, two skills
+  (site review/propose; execute approved) and a stdlib+httpx stdio MCP bridge. The bridge
+  fixes the tenant from operator config, validates arguments, derives deterministic
+  idempotency keys for proposals, refuses redirects and oversized results, never echoes the
+  token, and has no approve/reject tool.
+- Validation: `python -m pytest tests -q` passed (297 tests); a stdio `tools/list` smoke
+  test returned all seven tools. No real Claude session, WordPress site or provider call was
+  made, and the API was not restarted (the new API tools need a restart to be served).
+- Limits: plugin access uses a member session token (no scoped plugin tokens/OAuth yet);
+  verification needs Reckon's staging verifier enabled; the plugin cannot start crawls.
+
+## Plugin crawl tool and WordPress skills — 2026-11-21
+
+- Added MCP tool `reckon.crawl.start`, which calls the existing governed crawl route
+  (verified website, idempotency, daily quota, robots.txt, public-DNS pinning, optional
+  Celery queue) and additionally requires the `crawl.run` permission. The bridge exposes it
+  as `reckon_start_crawl` with a fresh or caller-supplied idempotency key, so re-crawls work
+  and retries do not duplicate.
+- Added skills `crawl-website` and `wordpress-apply-action` and linked the review and execute
+  skills to them. The documented state contract (`wp_type`, `wp_id`, `value`, `modified_gmt`
+  as `target_version`) is covered by a lifecycle test: a plugin report for a write that did
+  not happen ends `failed`; a real write is `verified` by Reckon's own read-back.
+- Only `heading` (post/page title) is executable and verifiable today. Other action types are
+  recommendations; the skills do not claim them.
+- Validation: `python -m pytest tests -q` passed (300 tests). No real crawl, WordPress or
+  Claude request was made; the running API still needs an approved restart to serve the new
+  tools.

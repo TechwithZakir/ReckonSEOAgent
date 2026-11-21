@@ -174,17 +174,27 @@ export async function confirmNativeSignInMfa(
   return { access_token: value.access_token, user_id: value.user_id, expires_in: value.expires_in }
 }
 
-export async function getMfaStatus(token: string): Promise<{ enabled: boolean }> {
+export async function getMfaStatus(token: string): Promise<{ enabled: boolean; recovery_codes_remaining: number }> {
   const response = await fetch('/api/v1/auth/mfa', {
     headers: { Authorization: `Bearer ${token}` },
     cache: 'no-store',
   })
   if (!response.ok) throw new NativeAuthError('MFA status could not be loaded.', response.status)
   const value: unknown = await response.json()
-  if (!value || typeof value !== 'object' || !('enabled' in value) || typeof value.enabled !== 'boolean') {
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    !('enabled' in value) ||
+    typeof value.enabled !== 'boolean' ||
+    !('recovery_codes_remaining' in value) ||
+    typeof value.recovery_codes_remaining !== 'number'
+  ) {
     throw new NativeAuthError('The API returned invalid MFA status.', response.status)
   }
-  return { enabled: value.enabled }
+  return {
+    enabled: value.enabled,
+    recovery_codes_remaining: value.recovery_codes_remaining,
+  }
 }
 
 export async function enrollMfa(
@@ -207,4 +217,21 @@ export async function confirmMfa(token: string, code: string): Promise<void> {
 
 export async function disableMfa(token: string, code: string): Promise<void> {
   await post('mfa/disable', { code }, token)
+}
+
+export async function rotateMfaRecoveryCodes(
+  token: string,
+): Promise<string[]> {
+  const response = await post('mfa/recovery-codes', undefined, token)
+  const value: unknown = await response.json()
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    !('codes' in value) ||
+    !Array.isArray(value.codes) ||
+    !value.codes.every((code) => typeof code === 'string' && /^[0-9A-F]{12}$/.test(code))
+  ) {
+    throw new NativeAuthError('The API returned invalid recovery codes.', response.status)
+  }
+  return value.codes
 }

@@ -5,7 +5,9 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, StringConstraints
+from sqlalchemy import select
 from sqlalchemy.orm import Session
+from reckon_core.persistence import AuditEvent
 
 from reckon_api.dependencies import (
     get_authenticated_principal,
@@ -76,6 +78,15 @@ class CrawlUsageResponse(BaseModel):
     remaining: int
 
 
+class AuditEventResponse(BaseModel):
+    event_id: UUID
+    action: str
+    resource_type: str
+    resource_id: UUID
+    request_id: UUID
+    created_at: datetime
+
+
 @router.get("", response_model=OrganizationPage)
 def list_organizations(
     response: Response,
@@ -123,6 +134,50 @@ def list_organization_members(
         items=[OrganizationMember(user_id=user_id, email=email, role=role) for user_id, email, role in rows],
         next_cursor=cursor,
     )
+
+
+@router.get(
+    "/{organization_id}/audit-events",
+    response_model=list[AuditEventResponse],
+)
+def list_audit_events(
+    response: Response,
+    organization_id: UUID,
+    limit: int = Query(default=50, ge=1, le=200),
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+    session: Session = Depends(get_database_session),
+) -> list[AuditEventResponse]:
+    context = resolve_organization_access(principal, organization_id, session)
+    try:
+        require_permission(context.role, OrganizationPermission.AUDIT_VIEW)
+    except TenantAccessDenied:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Organization administrator access is required.",
+        )
+    rows = session.scalars(
+        select(AuditEvent)
+        .where(AuditEvent.organization_id == organization_id)
+        .order_by(AuditEvent.created_at.desc(), AuditEvent.id.desc())
+        .limit(limit)
+    ).all()
+    response.headers["Cache-Control"] = "no-store"
+    result: list[AuditEventResponse] = []
+    for event in rows:
+        created_at = event.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        result.append(
+            AuditEventResponse(
+                event_id=event.id,
+                action=event.action,
+                resource_type=event.resource_type,
+                resource_id=event.resource_id,
+                request_id=event.request_id,
+                created_at=created_at.astimezone(timezone.utc),
+            )
+        )
+    return result
 
 
 @router.get(

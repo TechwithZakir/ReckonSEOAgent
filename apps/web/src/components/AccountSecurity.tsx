@@ -7,6 +7,7 @@ import {
   getMfaStatus,
   listNativeSessions,
   revokeNativeSession,
+  rotateMfaRecoveryCodes,
 } from '../lib/native-auth'
 import type { AccountSessionSummary } from '../lib/native-auth'
 
@@ -18,6 +19,8 @@ export function AccountSecurity({ accessToken }: { accessToken: string }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
+  const [recoveryCodes, setRecoveryCodes] = useState<string[]>([])
+  const [recoveryCount, setRecoveryCount] = useState(0)
 
   useEffect(() => {
     let active = true
@@ -28,6 +31,7 @@ export function AccountSecurity({ accessToken }: { accessToken: string }) {
       ([mfa, accountSessions]) => {
         if (active) {
           setEnabled(mfa.enabled)
+          setRecoveryCount(mfa.recovery_codes_remaining)
           setSessions(accountSessions)
         }
       },
@@ -81,6 +85,22 @@ export function AccountSecurity({ accessToken }: { accessToken: string }) {
       setMessage('MFA is disabled.')
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not disable MFA.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const rotateRecoveryCodes = async () => {
+    setBusy(true)
+    setError(null)
+    setMessage(null)
+    try {
+      const codes = await rotateMfaRecoveryCodes(accessToken)
+      setRecoveryCodes(codes)
+      setRecoveryCount(codes.length)
+      setMessage('Store these recovery codes securely. They are shown once.')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not rotate MFA recovery codes.')
     } finally {
       setBusy(false)
     }
@@ -153,6 +173,23 @@ export function AccountSecurity({ accessToken }: { accessToken: string }) {
           />
           <button className="button button--secondary" type="submit" disabled={busy}>Disable MFA</button>
         </form>
+      )}
+      {enabled && (
+        <>
+          <h3>Recovery codes</h3>
+          <p>{recoveryCount} unused recovery code(s).</p>
+          <button className="button button--secondary" type="button" disabled={busy} onClick={() => void rotateRecoveryCodes()}>
+            Rotate recovery codes
+          </button>
+          {recoveryCodes.length > 0 && (
+            <textarea
+              readOnly
+              value={recoveryCodes.join('\n')}
+              aria-label="One-time MFA recovery codes"
+              rows={10}
+            />
+          )}
+        </>
       )}
       <h3>Active sessions</h3>
       {sessions.length === 0 && <p>No active native sessions.</p>}

@@ -131,7 +131,7 @@ function isPageEvidence(value: unknown): value is PageEvidence {
 
 function isCrawl(value: unknown, websiteId: string): value is CrawlResponse {
   if (!record(value)) return false
-  return typeof value.crawl_id === 'string' && uuid.test(value.crawl_id) &&
+  if (!(typeof value.crawl_id === 'string' && uuid.test(value.crawl_id) &&
     value.website_id === websiteId && uuid.test(websiteId) &&
     ['running', 'completed', 'failed', 'disallowed'].includes(value.status as string) &&
     date(value.started_at) && (value.completed_at === null || date(value.completed_at)) &&
@@ -143,7 +143,13 @@ function isCrawl(value: unknown, websiteId: string): value is CrawlResponse {
     (value.sitemap_evidence === null || (Array.isArray(value.sitemap_evidence) && value.sitemap_evidence.every(isSitemapEvidence))) &&
     strings(value.internal_urls) &&
     Array.isArray(value.page_evidence) &&
-    value.page_evidence.every(isPageEvidence)
+    value.page_evidence.every(isPageEvidence))) {
+    return false
+  }
+  if (value.status === 'running' && value.completed_at !== null) return false
+  if (value.status === 'completed' && value.completed_at === null) return false
+  if (value.status === 'disallowed' && value.completed_at === null) return false
+  return true
 }
 
 function endpoint(organizationId: string, websiteId: string): string {
@@ -196,8 +202,17 @@ export async function startCrawl(
     headers: { Authorization: `Bearer ${token}`, 'Idempotency-Key': key },
   })
   const result = await payload(response, 'Crawl')
-  if (!isCrawl(result, websiteId) || !['completed', 'disallowed'].includes(result.status) || result.completed_at === null) {
-    throw new CrawlApiError('The API did not confirm a finished crawl.', response.status)
+  if (!isCrawl(result, websiteId)) {
+    throw new CrawlApiError('The API returned an invalid crawl result.', response.status)
+  }
+  if (result.status === 'completed') {
+    if (result.completed_at === null) {
+      throw new CrawlApiError('The API confirmed completion without a completion time.', response.status)
+    }
+  } else if (result.status === 'running') {
+    return result
+  } else if (result.status !== 'disallowed') {
+    throw new CrawlApiError('The API did not confirm a finished or queued crawl.', response.status)
   }
   return result
 }
@@ -403,4 +418,79 @@ export async function deleteCrawlSchedule(
       response.status,
     )
   }
+}
+
+export type EngineName =
+  | 'keywords'
+  | 'content_studio'
+  | 'linkpilot'
+  | 'local_seo'
+  | 'ecommerce'
+  | 'enterprise'
+  | 'media_query'
+  | 'emerging_geo'
+
+export type EngineFinding = {
+  code: string
+  title: string
+  impact: 'high' | 'medium' | 'low'
+  confidence: 'high' | 'medium'
+  effort: 'low' | 'medium' | 'high'
+  source_url: string
+  evidence: string
+  recommendation: string
+  verification: string
+}
+
+export type EngineAudit = {
+  engine: EngineName
+  version: string
+  coverage: 'complete' | 'partial' | 'unavailable'
+  findings: EngineFinding[]
+}
+
+export async function getEngineAudit(
+  token: string,
+  organizationId: string,
+  websiteId: string,
+  crawlId: string,
+  engine: EngineName,
+  fetcher: typeof fetch = fetch,
+): Promise<EngineAudit> {
+  const response = await fetcher(
+    `${endpoint(organizationId, websiteId)}/crawls/${encodeURIComponent(crawlId)}/engines/${engine}`,
+    { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' },
+  )
+  if (!response.ok) {
+    throw new CrawlApiError(
+      `Engine audit could not be loaded (HTTP ${response.status}).`,
+      response.status,
+    )
+  }
+  const data: unknown = await response.json()
+  if (
+    !record(data) ||
+    data.engine !== engine ||
+    typeof data.version !== 'string' ||
+    !['complete', 'partial', 'unavailable'].includes(data.coverage as string) ||
+    !Array.isArray(data.findings)
+  ) {
+    throw new CrawlApiError('The API returned invalid engine audit output.', response.status)
+  }
+  for (const finding of data.findings) {
+    if (
+      !record(finding) ||
+      typeof finding.code !== 'string' ||
+      typeof finding.title !== 'string' ||
+      !['high', 'medium', 'low'].includes(finding.impact as string) ||
+      !['high', 'medium'].includes(finding.confidence as string) ||
+      !['low', 'medium', 'high'].includes(finding.effort as string) ||
+      ['source_url', 'evidence', 'recommendation', 'verification'].some(
+        (key) => typeof finding[key] !== 'string',
+      )
+    ) {
+      throw new CrawlApiError('The API returned invalid engine findings.', response.status)
+    }
+  }
+  return data as EngineAudit
 }

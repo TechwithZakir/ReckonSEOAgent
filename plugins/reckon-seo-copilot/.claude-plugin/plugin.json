@@ -1,0 +1,7 @@
+{
+  "name": "reckon-seo-copilot",
+  "version": "0.1.0",
+  "description": "Reckon SEO Copilot: reads audited website evidence, proposes SEO changes for human approval, and executes approved changes with independent verification.",
+  "author": { "name": "Reckon" },
+  "license": "UNLICENSED"
+}

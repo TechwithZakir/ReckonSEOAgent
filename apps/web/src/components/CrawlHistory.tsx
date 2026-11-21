@@ -233,7 +233,13 @@ function CrawlHistoryState({ accessToken, organizationId, websiteId, verified, r
       if (current !== generation.current) return
       requestKey.current = null
       setRetry(false)
-      setNotice(result.status === 'completed' ? 'Crawl completed.' : 'Crawl was disallowed by robots policy.')
+      setNotice(
+        result.status === 'running'
+          ? 'Crawl queued and running. Refresh history to see its result.'
+          : result.status === 'completed'
+            ? 'Crawl completed.'
+            : 'Crawl was disallowed by robots policy.',
+      )
       setLoading(true)
       setHistoryError(null)
       setVersion((value) => value + 1)

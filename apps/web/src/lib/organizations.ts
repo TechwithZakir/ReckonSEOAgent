@@ -18,6 +18,15 @@ export type OrganizationMemberPage = {
   next_cursor: string | null
 }
 
+export type AuditEvent = {
+  event_id: string
+  action: string
+  resource_type: string
+  resource_id: string
+  request_id: string
+  created_at: string
+}
+
 export class OrganizationApiError extends Error {
   readonly status: number
 
@@ -209,4 +218,72 @@ export async function renameOrganization(
     throw new OrganizationApiError('The API returned an invalid organization profile.', response.status)
   }
   return payload as OrganizationContext & { name: string }
+}
+
+export async function listAuditEvents(
+  accessToken: string,
+  organizationId: string,
+  fetcher: typeof fetch = fetch,
+): Promise<AuditEvent[]> {
+  const response = await fetcher(
+    `/api/v1/organizations/${encodeURIComponent(organizationId)}/audit-events?limit=50`,
+    { headers: { Authorization: `Bearer ${accessToken}` }, cache: 'no-store' },
+  )
+  if (!response.ok) {
+    throw new OrganizationApiError(
+      `Could not load audit events (HTTP ${response.status}).`,
+      response.status,
+    )
+  }
+  const value: unknown = await response.json()
+  if (!Array.isArray(value)) {
+    throw new OrganizationApiError('The API returned invalid audit events.', response.status)
+  }
+  const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i
+  for (const event of value) {
+    if (
+      !event ||
+      typeof event !== 'object' ||
+      typeof (event as Record<string, unknown>).event_id !== 'string' ||
+      !uuid.test((event as Record<string, unknown>).event_id as string) ||
+      typeof (event as Record<string, unknown>).action !== 'string' ||
+      typeof (event as Record<string, unknown>).resource_type !== 'string' ||
+      typeof (event as Record<string, unknown>).resource_id !== 'string' ||
+      typeof (event as Record<string, unknown>).request_id !== 'string' ||
+      typeof (event as Record<string, unknown>).created_at !== 'string'
+    ) {
+      throw new OrganizationApiError('The API returned invalid audit events.', response.status)
+    }
+  }
+  return value as AuditEvent[]
+}
+
+export async function downloadAuditEvents(
+  accessToken: string,
+  organizationId: string,
+  fetcher: typeof fetch = fetch,
+): Promise<void> {
+  const events = await listAuditEvents(accessToken, organizationId, fetcher)
+  const rows = [
+    ['event_id', 'action', 'resource_type', 'resource_id', 'request_id', 'created_at'],
+    ...events.map((event) => [
+      event.event_id,
+      event.action,
+      event.resource_type,
+      event.resource_id,
+      event.request_id,
+      event.created_at,
+    ]),
+  ]
+  const escape = (value: string) => `"${value.replaceAll('"', '""')}"`
+  const csv = rows
+    .map((row) => row.map((value) => escape(value)).join(','))
+    .join('\n')
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `reckon-audit-${organizationId}.csv`
+  link.click()
+  URL.revokeObjectURL(url)
 }

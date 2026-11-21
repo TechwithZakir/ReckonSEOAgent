@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 
 import httpx
 from fastapi import FastAPI
@@ -26,10 +26,60 @@ def test_mcp_tool_discovery_is_typed_and_read_only() -> None:
             "name": "reckon.crawl.list",
             "read_only": True,
             "tenant_scoped": True,
+            "proposal_only": False,
         },
         {
             "name": "reckon.crawl.schedule.list",
             "read_only": True,
             "tenant_scoped": True,
+            "proposal_only": False,
+        },
+        {
+            "name": "reckon.audit.list",
+            "read_only": True,
+            "tenant_scoped": True,
+            "proposal_only": False,
+        },
+        {
+            "name": "reckon.seo_action.propose",
+            "read_only": False,
+            "tenant_scoped": True,
+            "proposal_only": True,
+        },
+        {
+            "name": "reckon.crawl.start",
+            "read_only": False,
+            "tenant_scoped": True,
+            "proposal_only": False,
+        },
+        {
+            "name": "reckon.website.evidence.get",
+            "read_only": True,
+            "tenant_scoped": True,
+            "proposal_only": False,
+        },
+        {
+            "name": "reckon.engine.audit.get",
+            "read_only": True,
+            "tenant_scoped": True,
+            "proposal_only": False,
+        },
+        {
+            "name": "reckon.seo_action.approved.list",
+            "read_only": True,
+            "tenant_scoped": True,
+            "proposal_only": False,
+        },
+        {
+            "name": "reckon.seo_action.claim",
+            "read_only": False,
+            "tenant_scoped": True,
+            "proposal_only": False,
+        },
+        {
+            "name": "reckon.seo_action.report",
+            "read_only": False,
+            "tenant_scoped": True,
+            "proposal_only": False,
         },
     ]

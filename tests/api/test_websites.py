@@ -447,6 +447,58 @@ def test_unmapped_identity_cannot_register_a_website(
     assert response.status_code == 401
 
 
+def test_tenant_engine_audit_reads_completed_crawl_evidence(
+    website_api: tuple[FastAPI, sessionmaker[Session], UUID],
+) -> None:
+    app, factory, organization_id = website_api
+    website_id = register_verified_website(app, factory, organization_id)
+    app.state.homepage_crawler = StaticHomepageCrawler(
+        CrawlResult(
+            final_url="https://crawl.example.com/",
+            status_code=200,
+            content_type="text/html",
+            bytes_read=100,
+            title=None,
+            redirect_count=0,
+            meta_description=None,
+            h1_count=0,
+            h2_count=0,
+            image_count=2,
+            missing_alt_text_count=1,
+            internal_urls=("https://crawl.example.com/product/test",),
+            page_evidence=(),
+        )
+    )
+    base = f"/api/v1/organizations/{organization_id}/websites/{website_id}"
+    crawl_response = asyncio.run(
+        website_request(
+            app,
+            "POST",
+            f"{base}/crawl",
+            idempotency_key="crawl-engine-api-001",
+        )
+    )
+    assert crawl_response.status_code == 200
+    crawl_id = crawl_response.json()["crawl_id"]
+    audit_response = asyncio.run(
+        website_request(
+            app,
+            "GET",
+            f"{base}/crawls/{crawl_id}/engines/content_studio",
+        )
+    )
+    assert audit_response.status_code == 200
+    payload = audit_response.json()
+    assert payload["engine"] == "content_studio"
+    assert payload["version"] == "content_studio-v1"
+    assert payload["coverage"] in {"complete", "partial", "unavailable"}
+    assert payload["findings"]
+    assert all(
+        finding["source_url"] == "https://crawl.example.com/"
+        for finding in payload["findings"]
+    )
+
+
 def test_member_crawl_is_persisted_audited_and_idempotent(
     website_api: tuple[FastAPI, sessionmaker[Session], UUID],
 ) -> None:

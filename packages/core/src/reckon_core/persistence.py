@@ -111,6 +111,22 @@ class NativeMfaChallenge(Base):
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class NativeMfaRecoveryCode(Base):
+    __tablename__ = "auth_mfa_recovery"
+    __table_args__ = (
+        Index("ix_auth_mfa_recovery_user", "usr_id"),
+    )
+
+    code_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        "usr_id", Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class NativeSession(Base):
     __tablename__ = "auth_sessions"
     __table_args__ = (Index("ix_auth_sessions_expiry", "expires_at"),)
@@ -620,3 +636,61 @@ class CrawlSchedule(Base):
         nullable=False,
         default=lambda: datetime.now(timezone.utc),
     )
+
+
+class SeoActionProposal(Base):
+    __tablename__ = "seo_action_proposals"
+    __table_args__ = (
+        UniqueConstraint("org_id", "idem_key", name="uq_seo_action_org_idem"),
+        UniqueConstraint("org_id", "id", name="uq_seo_action_tenant_id"),
+        CheckConstraint("risk IN ('low', 'medium', 'high')", name="ck_seo_action_risk"),
+        CheckConstraint(
+            "status IN ('proposed','approved','rejected','executing','executed','verified','failed','rolled_back')",
+            name="ck_seo_action_status",
+        ),
+        ForeignKeyConstraint(
+            ["site_id", "org_id"],
+            ["sites.id", "sites.org_id"],
+            ondelete="CASCADE",
+        ),
+        Index("ix_seo_action_org_created", "org_id", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column("org_id", Uuid, nullable=False)
+    website_id: Mapped[UUID] = mapped_column("site_id", Uuid, nullable=False)
+    actor_user_id: Mapped[UUID] = mapped_column(
+        "actor_usr_id", Uuid, ForeignKey("users.id"), nullable=False
+    )
+    idempotency_key: Mapped[str] = mapped_column("idem_key", String(128), nullable=False)
+    proposal_hash: Mapped[str] = mapped_column("proposal_hash", String(64), nullable=False)
+    approval_hash: Mapped[str] = mapped_column("approval_hash", String(64), nullable=False)
+    action_type: Mapped[str] = mapped_column("action_type", String(32), nullable=False)
+    target_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    target_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    risk: Mapped[str] = mapped_column(String(10), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="proposed")
+    reason: Mapped[str] = mapped_column(String(200), nullable=False)
+    before_state: Mapped[dict[str, str]] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), nullable=False
+    )
+    proposed_state: Mapped[dict[str, str]] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), nullable=False
+    )
+    executed_state: Mapped[dict[str, str] | None] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), nullable=True
+    )
+    verification_state: Mapped[dict[str, str] | None] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), nullable=True
+    )
+    rollback_state: Mapped[dict[str, str] | None] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), nullable=True
+    )
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

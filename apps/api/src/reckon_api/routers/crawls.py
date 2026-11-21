@@ -69,6 +69,7 @@ from reckon_core.tenancy import (
     TenantAccessDenied,
 )
 from reckon_core.permissions import OrganizationPermission, require_permission
+from reckon_core.seo_engines import EngineName, audit_engine
 
 router = APIRouter(
     prefix="/api/v1/organizations/{organization_id}/websites",
@@ -152,6 +153,25 @@ class CrawlResponse(BaseModel):
     internal_urls: list[str] = Field(default_factory=list)
     page_evidence: list[PageEvidenceResponse] = Field(default_factory=list)
     error_code: str | None
+
+
+class EngineFindingResponse(BaseModel):
+    code: str
+    title: str
+    impact: Literal["high", "medium", "low"]
+    confidence: Literal["high", "medium"]
+    effort: Literal["low", "medium", "high"]
+    source_url: str
+    evidence: str
+    recommendation: str
+    verification: str
+
+
+class EngineAuditResponse(BaseModel):
+    engine: EngineName
+    version: str
+    coverage: Literal["complete", "partial", "unavailable"]
+    findings: list[EngineFindingResponse]
 
 
 class PrioritizationResponse(BaseModel):
@@ -265,6 +285,54 @@ def list_website_crawls(
             detail="Website not found.",
         ) from error
     return [_crawl_response(run) for run in runs]
+
+
+@router.get(
+    "/{website_id}/crawls/{crawl_id}/engines/{engine}",
+    response_model=EngineAuditResponse,
+)
+def get_engine_audit(
+    organization_id: UUID,
+    website_id: UUID,
+    crawl_id: UUID,
+    engine: EngineName,
+    principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
+    session: Session = Depends(get_database_session),
+) -> EngineAuditResponse:
+    context = resolve_organization_access(principal, organization_id, session)
+    run = session.scalar(
+        select(CrawlRun).where(
+            CrawlRun.organization_id == context.organization_id,
+            CrawlRun.website_id == website_id,
+            CrawlRun.id == crawl_id,
+            CrawlRun.status == "completed",
+        )
+    )
+    if run is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Completed crawl evidence was not found.",
+        )
+    audit = audit_engine(run, engine)
+    return EngineAuditResponse(
+        engine=audit.engine,
+        version=audit.version,
+        coverage=audit.coverage,
+        findings=[
+            EngineFindingResponse(
+                code=finding.code,
+                title=finding.title,
+                impact=finding.impact,
+                confidence=finding.confidence,
+                effort=finding.effort,
+                source_url=finding.source_url,
+                evidence=finding.evidence,
+                recommendation=finding.recommendation,
+                verification=finding.verification,
+            )
+            for finding in audit.findings
+        ],
+    )
 
 
 def _schedule_response(schedule: CrawlSchedule) -> CrawlScheduleResponse:

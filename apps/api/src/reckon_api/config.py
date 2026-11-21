@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     cms_wordpress_base_url: str | None = None
     cms_wordpress_username: str | None = None
     cms_wordpress_app_password: SecretStr | None = None
+    cms_wordpress_execution_enabled: bool = False
 
     model_config = SettingsConfigDict(
         env_prefix="RECKON_",
@@ -53,6 +54,13 @@ class Settings(BaseSettings):
             for value in cms_values
         ):
             raise ValueError("WordPress CMS URL, username and application password must be configured together.")
+        if self.cms_wordpress_execution_enabled and (
+            not self.cms_wordpress_enabled or self.environment in {"production", "test"}
+        ):
+            raise ValueError(
+                "WordPress execution requires configured WordPress credentials "
+                "and a local or staging environment."
+            )
         if self.crawl_worker_enabled and not self.crawl_broker_url:
             raise ValueError("A Redis/Celery broker is required when crawl workers are enabled.")
         oidc_values = (

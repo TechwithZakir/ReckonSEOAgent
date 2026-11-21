@@ -27,11 +27,15 @@ from reckon_api.routers.platform import router as platform_router
 from reckon_api.routers.organization_management import router as organization_management_router
 from reckon_api.routers.mcp import router as mcp_router
 from reckon_api.routers.cms import router as cms_router
+from reckon_api.routers.seo_actions import router as seo_actions_router
 from reckon_api.routers.websites import router as websites_router
 from reckon_core.crawler import HomepageCrawler
 from reckon_core.crawl_security import PublicDnsAddressResolver
 from reckon_core.oidc import OidcTokenVerifier
 from reckon_api.crawl_worker import CeleryCrawlQueue, create_celery_app
+from pydantic import SecretStr
+from reckon_core.action_executor import FixtureActionExecutor
+from reckon_core.wordpress_executor import WordPressActionExecutor
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -84,6 +88,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.model_test_resolver = PublicDnsAddressResolver(timeout_seconds=2.0)
     app.state.model_test_transport = None
     app.state.cms_transport = None
+    if app_settings.environment == "test":
+        app.state.seo_action_executor = FixtureActionExecutor()
+    elif app_settings.cms_wordpress_execution_enabled:
+        assert app_settings.cms_wordpress_base_url is not None
+        assert app_settings.cms_wordpress_username is not None
+        assert app_settings.cms_wordpress_app_password is not None
+        app.state.seo_action_executor = WordPressActionExecutor(
+            app_settings.cms_wordpress_base_url,
+            app_settings.cms_wordpress_username,
+            SecretStr(app_settings.cms_wordpress_app_password.get_secret_value()),
+        )
+    else:
+        app.state.seo_action_executor = None
     app.state.verification_mailer = (
         SmtpVerificationMailer(app_settings)
         if app_settings.smtp_host and app_settings.smtp_from and app_settings.web_public_origin
@@ -155,6 +172,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(organization_management_router)
     app.include_router(mcp_router)
     app.include_router(cms_router)
+    app.include_router(seo_actions_router)
     return app
 
 

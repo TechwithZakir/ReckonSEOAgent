@@ -14,7 +14,7 @@ from uuid import UUID
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from email_validator import EmailNotValidError, validate_email
-from sqlalchemy import case, delete, select, update
+from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from reckon_core.persistence import (
     NativeAccount, NativeAuthEvent, NativeAuthRateLimit, NativeMfaChallenge,
+    NativeMfaRecoveryCode,
     NativePasswordReset, NativeSession,
     NativeVerification, PlatformAdministrator, User,
 )
@@ -398,9 +399,25 @@ class NativeAuthRepository:
             )
             .with_for_update()
         )
-        if entry is None or not verify_totp(secret, code):
+        if entry is None:
+            raise InvalidMfa
+        valid_totp = verify_totp(secret, code)
+        recovery = None
+        if not valid_totp:
+            recovery = self._session.scalar(
+                select(NativeMfaRecoveryCode)
+                .where(
+                    NativeMfaRecoveryCode.user_id == entry.user_id,
+                    NativeMfaRecoveryCode.code_hash == _digest(code),
+                    NativeMfaRecoveryCode.consumed_at.is_(None),
+                )
+                .with_for_update()
+            )
+        if not valid_totp and recovery is None:
             raise InvalidMfa
         entry.consumed_at = now
+        if recovery is not None:
+            recovery.consumed_at = now
         token = _SESSION_PREFIX + secrets.token_urlsafe(32)
         self._session.add(NativeSession(
             token_hash=_digest(token),
@@ -427,6 +444,56 @@ class NativeAuthRepository:
         account.mfa_secret_cipher = ciphertext
         account.mfa_enabled = enabled
         self._session.flush()
+
+    def replace_mfa_recovery_codes(
+        self,
+        user_id: UUID,
+        request_id: UUID,
+        count: int = 10,
+    ) -> tuple[str, ...]:
+        if type(count) is not int or not 1 <= count <= 20:
+            raise ValueError("Recovery code count must be between 1 and 20.")
+        account = self._session.get(NativeAccount, user_id)
+        if account is None or not account.mfa_enabled:
+            raise InvalidMfa
+        self._session.execute(
+            delete(NativeMfaRecoveryCode).where(
+                NativeMfaRecoveryCode.user_id == user_id
+            )
+        )
+        plaintext: list[str] = []
+        now = datetime.now(timezone.utc)
+        for _ in range(count):
+            code = secrets.token_hex(6).upper()
+            plaintext.append(code)
+            self._session.add(
+                NativeMfaRecoveryCode(
+                    code_hash=_digest(code),
+                    user_id=user_id,
+                    created_at=now,
+                )
+            )
+        self._session.add(
+            NativeAuthEvent(
+                user_id=user_id,
+                request_id=request_id,
+                action="mfa.recovery_codes_rotated",
+            )
+        )
+        self._session.flush()
+        return tuple(plaintext)
+
+    def recovery_code_count(self, user_id: UUID) -> int:
+        account = self._session.get(NativeAccount, user_id)
+        if account is None:
+            raise InvalidMfa
+        count = self._session.scalar(
+            select(func.count(NativeMfaRecoveryCode.code_hash)).where(
+                NativeMfaRecoveryCode.user_id == user_id,
+                NativeMfaRecoveryCode.consumed_at.is_(None),
+            )
+        )
+        return int(count or 0)
 
     def revoke(self, token: str, user_id: UUID, request_id: UUID) -> None:
         entry = self._session.scalar(

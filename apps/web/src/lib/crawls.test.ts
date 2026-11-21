@@ -78,7 +78,7 @@ describe('crawl API client', () => {
   it('rejects malformed, unfinished and wrong-site responses instead of claiming success', async () => {
     for (const result of [
       { ...crawl, website_id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' },
-      { ...crawl, status: 'running' },
+      { ...crawl, status: 'running', completed_at: '2026-01-01T10:00:01Z' },
       { ...crawl, completed_at: null },
       { ...crawl, started_at: '1' },
       { ...crawl, findings: [{ ...crawl.findings![0], evidence: 42 }] },
@@ -97,6 +97,13 @@ describe('crawl API client', () => {
   it('accepts a confirmed robots disallow without labeling it completed', async () => {
     const result = { ...crawl, status: 'disallowed' as const, error_code: 'robots_disallowed' }
     await expect(startCrawl('token', 'org', websiteId, 'crawl-key-123', async () => response(result))).resolves.toMatchObject({ status: 'disallowed' })
+  })
+
+  it('accepts a worker-queued running crawl without claiming completion', async () => {
+    const result = { ...crawl, status: 'running' as const, completed_at: null }
+    await expect(
+      startCrawl('token', 'org', websiteId, 'crawl-key-worker', async () => response(result)),
+    ).resolves.toMatchObject({ status: 'running', completed_at: null })
   })
 
   it('accepts the deterministic sitemap membership findings', async () => {

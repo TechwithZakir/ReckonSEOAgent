@@ -3,6 +3,7 @@ import {
   confirmNativeSignInMfa,
   confirmPasswordReset, getNativeMethods, listNativeSessions, requestSignup,
   revokeNativeSession, signInNative, signOutNative, verifySignup,
+  rotateMfaRecoveryCodes,
 } from './native-auth'
 
 afterEach(() => vi.unstubAllGlobals())
@@ -108,5 +109,25 @@ describe('native account API', () => {
       access_token: accessToken,
       expires_in: 3600,
     })
+  })
+
+  it('rotates MFA recovery codes and never sends them in the URL', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({
+        codes: ['A1B2C3D4E5F6', 'F6E5D4C3B2A1'],
+      }), { status: 200 }),
+    )
+    vi.stubGlobal('fetch', fetcher)
+    await expect(rotateMfaRecoveryCodes('rk1_fixture')).resolves.toEqual([
+      'A1B2C3D4E5F6',
+      'F6E5D4C3B2A1',
+    ])
+    expect(fetcher).toHaveBeenCalledWith(
+      '/api/v1/auth/mfa/recovery-codes',
+      expect.objectContaining({
+        method: 'POST',
+        headers: { Authorization: 'Bearer rk1_fixture' },
+      }),
+    )
   })
 })

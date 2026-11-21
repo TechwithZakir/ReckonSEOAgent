@@ -6,9 +6,11 @@ import { AIModelSettings } from './components/AIModelSettings'
 import { LoginPage } from './components/LoginPage'
 import { InvitationsPage } from './components/InvitationsPage'
 import { PlatformAccess } from './components/PlatformAccess'
+import { PlatformOperations } from './components/PlatformOperations'
 import { OperationsOverview } from './components/OperationsOverview'
 import { AccountSecurity } from './components/AccountSecurity'
 import { OrganizationMembers } from './components/OrganizationMembers'
+import { WorkspacePages } from './components/WorkspacePages'
 import { WorkspaceSetup } from './components/WorkspaceSetup'
 import { WebsiteOnboarding } from './components/WebsiteOnboarding'
 import type { OrganizationContext } from './lib/organizations'
@@ -126,7 +128,16 @@ const navigationGroups: { label: string; items: NavigationItem[] }[] = [
     items: [
       { label: 'Overview', icon: 'grid', available: true },
       { label: 'Websites', icon: 'globe', available: true },
-      { label: 'Technical audits', icon: 'audit', available: false },
+      { label: 'Site Bot', icon: 'activity', available: true },
+      { label: 'Technical audits', icon: 'audit', available: true },
+      { label: 'Keywords', icon: 'spark', available: true },
+      { label: 'Content Studio', icon: 'book', available: true },
+      { label: 'LinkPilot', icon: 'arrow', available: true },
+      { label: 'Local SEO', icon: 'globe', available: true },
+      { label: 'E-Commerce', icon: 'grid', available: true },
+      { label: 'Enterprise', icon: 'users', available: true },
+      { label: 'Media & Query', icon: 'audit', available: true },
+      { label: 'Emerging / GEO', icon: 'spark', available: true },
       { label: 'System settings', icon: 'spark', available: true },
       { label: 'Account security', icon: 'users', available: true },
     ],
@@ -134,13 +145,25 @@ const navigationGroups: { label: string; items: NavigationItem[] }[] = [
   {
     label: 'Intelligence',
     items: [
-      { label: 'Recommendations', icon: 'spark', available: false },
-      { label: 'Agent activity', icon: 'activity', available: false },
+      { label: 'Recommendations', icon: 'spark', available: true },
+      { label: 'Agent activity', icon: 'activity', available: true },
+      { label: 'Ask SEO Copilot', icon: 'spark', available: true },
+      { label: 'Reports', icon: 'book', available: true },
     ],
   },
   {
     label: 'Governance',
-    items: [{ label: 'Approvals', icon: 'check', available: false }],
+    items: [
+      { label: 'Approvals', icon: 'check', available: true },
+      { label: 'Agency Workspace', icon: 'users', available: true },
+      { label: 'Integrations', icon: 'grid', available: true },
+    ],
+  },
+  {
+    label: 'Platform',
+    items: [
+      { label: 'Platform operations', icon: 'activity', available: true },
+    ],
   },
 ]
 
@@ -208,6 +231,7 @@ function Dashboard({ onNavigate }: { onNavigate: (path: string) => void }) {
   const [health, setHealth] = useState<PlatformHealth>(initialHealth)
   const [checkedAt, setCheckedAt] = useState<Date | null>(null)
   const [refreshing, setRefreshing] = useState(false)
+  const [platformAdmin, setPlatformAdmin] = useState(false)
   const [activeNavigation, setActiveNavigation] = useState('Overview')
   const [workspaceState, setWorkspaceState] = useState<{
     subject: string
@@ -256,6 +280,26 @@ function Dashboard({ onNavigate }: { onNavigate: (path: string) => void }) {
       window.clearInterval(intervalId)
     }
   }, [refreshHealth])
+
+  useEffect(() => {
+    if (auth.status !== 'signed-in' || !auth.user?.access_token) {
+      return
+    }
+    let active = true
+    void fetch('/api/v1/platform/access', {
+      headers: { Authorization: `Bearer ${auth.user.access_token}` },
+      cache: 'no-store',
+    }).then(async (response) => {
+      if (!response.ok) throw new Error('Platform access unavailable.')
+      const value: unknown = await response.json()
+      if (active && value && typeof value === 'object' && 'is_platform_admin' in value) {
+        setPlatformAdmin(value.is_platform_admin === true)
+      }
+    }).catch(() => {
+      if (active) setPlatformAdmin(false)
+    })
+    return () => { active = false }
+  }, [auth.status, auth.user?.access_token])
 
   const toggleTheme = () => {
     setTheme((currentTheme) => (currentTheme === 'light' ? 'dark' : 'light'))
@@ -339,6 +383,8 @@ function Dashboard({ onNavigate }: { onNavigate: (path: string) => void }) {
 
         <nav aria-label="Main navigation" className="sidebar-nav">
           {navigationGroups.map((group) => (
+            platformAdmin || group.label !== 'Platform'
+              ? (
             <div className="nav-group" key={group.label}>
               <p className="nav-group__label">{group.label}</p>
               {group.items.map((item) => (
@@ -350,26 +396,25 @@ function Dashboard({ onNavigate }: { onNavigate: (path: string) => void }) {
                         : 'location'
                       : undefined
                   }
-                  aria-disabled={!item.available}
+                  aria-disabled={!item.available || (item.label === 'Platform operations' && !platformAdmin)}
                   className={`nav-item${activeNavigation === item.label ? ' nav-item--active' : ''}`}
-                  disabled={!item.available}
+                  disabled={!item.available || (item.label === 'Platform operations' && !platformAdmin)}
                   key={item.label}
                   title={
                     item.available
                       ? undefined
                       : `${item.label} is not available in this build`
                   }
-                  onClick={
-                    item.label === 'Websites'
-                      ? handleWebsiteNavigation
-                      : item.label === 'Overview'
-                        ? handleOverviewNavigation
-                        : item.label === 'System settings'
-                          ? handleSettingsNavigation
-                        : item.label === 'Account security'
-                          ? handleAccountSecurityNavigation
-                        : undefined
-                  }
+                  onClick={() => {
+                    if (item.label === 'Websites') handleWebsiteNavigation()
+                    else if (item.label === 'Overview') handleOverviewNavigation()
+                    else if (item.label === 'System settings') handleSettingsNavigation()
+                    else if (item.label === 'Account security') handleAccountSecurityNavigation()
+                    else {
+                      setActiveNavigation(item.label)
+                      window.scrollTo({ top: 0, behavior: 'smooth' })
+                    }
+                  }}
                   type="button"
                 >
                   <Icon name={item.icon} />
@@ -380,6 +425,8 @@ function Dashboard({ onNavigate }: { onNavigate: (path: string) => void }) {
                 </button>
               ))}
             </div>
+              )
+              : null
           ))}
         </nav>
 
@@ -405,7 +452,7 @@ function Dashboard({ onNavigate }: { onNavigate: (path: string) => void }) {
           <div className="breadcrumbs">
             <span>Workspace</span>
             <Icon name="chevron" />
-            <strong>Overview</strong>
+            <strong>{activeNavigation}</strong>
           </div>
           <div className="topbar__actions">
             <span className="environment-pill">
@@ -440,6 +487,18 @@ function Dashboard({ onNavigate }: { onNavigate: (path: string) => void }) {
         </header>
 
         <main className="page-content">
+          {activeNavigation !== 'Overview' ? (
+            activeNavigation === 'Platform operations' && platformAdmin ? (
+              <PlatformOperations accessToken={auth.user?.access_token ?? ''} />
+            ) : (
+            <WorkspacePages
+              page={activeNavigation}
+              accessToken={auth.status === 'signed-in' ? auth.user?.access_token ?? '' : ''}
+              organization={workspace}
+            />
+            )
+          ) : (
+          <>
           <section aria-labelledby="page-title" className="page-intro">
             <div>
               <p className="eyebrow">
@@ -654,6 +713,8 @@ function Dashboard({ onNavigate }: { onNavigate: (path: string) => void }) {
             <span>Reckon SEO Autopilot</span>
             <span>Built around evidence, authorization, and verification.</span>
           </footer>
+          </>
+          )}
         </main>
       </div>
     </div>

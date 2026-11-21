@@ -53,6 +53,105 @@
   box-sizing: border-box;
 }
 
+.mock-page {
+  display: grid;
+  gap: 18px;
+}
+
+.mock-page__heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  margin: 4px 0 8px;
+}
+
+.mock-page__heading h1 {
+  margin: 4px 0 6px;
+  font-size: clamp(24px, 3vw, 32px);
+  letter-spacing: -1px;
+}
+
+.mock-page__heading > div > p:last-child {
+  max-width: 720px;
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.mock-grid {
+  display: grid;
+  gap: 16px;
+}
+
+.mock-grid--three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.mock-agent-card {
+  min-height: 150px;
+}
+
+.mock-agent-card h3 {
+  margin: 12px 0 6px;
+  font-size: 15px;
+}
+
+.mock-agent-card p {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.mock-chat {
+  min-height: 420px;
+  display: flex;
+  flex-direction: column;
+}
+
+.mock-chat__messages {
+  display: flex;
+  min-height: 330px;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px;
+}
+
+.mock-chat__message {
+  max-width: 78%;
+  padding: 11px 13px;
+  border-radius: 12px;
+  line-height: 1.55;
+  font-size: 13px;
+}
+
+.mock-chat__message--assistant {
+  align-self: flex-start;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+}
+
+.mock-chat__message--user {
+  align-self: flex-end;
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.mock-chat__form {
+  display: flex;
+  gap: 8px;
+  padding: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.mock-chat__form input {
+  min-width: 0;
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--text-primary);
+  padding: 10px 12px;
+}
+
 .login-page__header {
   display: flex;
   justify-content: space-between;
@@ -1689,6 +1788,10 @@
     grid-template-columns: minmax(0, 1fr);
     gap: 16px;
   }
+
+  .mock-grid--three {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 820px) {
@@ -1755,6 +1858,18 @@
 }
 
 @media (max-width: 600px) {
+  .mock-grid--three {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .mock-chat__message {
+    max-width: 92%;
+  }
+
+  .mock-chat__form {
+    flex-direction: column;
+  }
+
   .page-intro {
     align-items: flex-start;
     flex-direction: column;

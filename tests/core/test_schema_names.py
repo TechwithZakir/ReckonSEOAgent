@@ -8,6 +8,8 @@ def test_physical_database_schema_uses_short_table_and_column_names() -> None:
         "auth_accounts",
         "auth_verify",
         "auth_reset",
+        "seo_action_proposals",
+        "auth_mfa_recovery",
         "crawl_schedules",
         "auth_mfa_challenges",
         "auth_sessions",

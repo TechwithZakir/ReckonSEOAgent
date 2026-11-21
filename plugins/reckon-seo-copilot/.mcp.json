@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "reckon-seo-copilot": {
+      "command": "python",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/server/reckon_mcp_bridge.py"],
+      "env": {
+        "RECKON_API_URL": "${RECKON_API_URL}",
+        "RECKON_ORGANIZATION_ID": "${RECKON_ORGANIZATION_ID}",
+        "RECKON_ACCESS_TOKEN": "${RECKON_ACCESS_TOKEN}"
+      }
+    }
+  }
+}
