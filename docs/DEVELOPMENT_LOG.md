@@ -877,3 +877,13 @@ executor, SEO engines and the Claude plugin now exist). Remaining gaps:
   (`describeVerification`) and a banner when a silent claim was settled by read-back
   (`wasRecovered`). While any action is `executing` the list re-fetches every 15 s.
 - Validation: `tsc -b` clean; `npm test` passed (100 tests; 3 new). Not exercised in a browser.
+
+## Pyflakes cleanup — 2026-11-22
+
+- `ruff check --isolated --select F` found a real bug: `TenantContext` was not imported in
+  `routers/crawls.py`, and it is used in a nested function annotation that is evaluated when
+  the function is defined, so that code path would raise `NameError`. Imported it. Also
+  removed unused imports and added the missing `UUID` import in a test.
+- The project has no ruff config; the stricter default rule set reports hundreds of style
+  findings and was not applied. One harmless F841 remains (`schedule` in `delete_schedule`).
+- Validation: `pytest tests -q` passed (329).

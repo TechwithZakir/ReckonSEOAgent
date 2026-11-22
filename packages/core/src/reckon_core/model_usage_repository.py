@@ -21,7 +21,7 @@ from reckon_core.repositories import (
     SqlAlchemyMembershipRepository,
     utc_day,
 )
-from reckon_core.tenancy import OrganizationRole, TenantAccessDenied, TenantContext
+from reckon_core.tenancy import TenantAccessDenied, TenantContext
 from reckon_core.permissions import OrganizationPermission, require_permission
 
 UnknownReason = Literal[

@@ -65,8 +65,8 @@ from reckon_core.seo_audit import (
 )
 from reckon_core.tenancy import (
     AuthenticatedPrincipal,
-    OrganizationRole,
     TenantAccessDenied,
+    TenantContext,
 )
 from reckon_core.permissions import OrganizationPermission, require_permission
 from reckon_core.seo_engines import EngineName, audit_engine

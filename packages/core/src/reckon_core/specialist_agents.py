@@ -21,7 +21,6 @@ from reckon_core.persistence import AuditEvent, CrawlRun
 from reckon_core.repositories import SqlAlchemyMembershipRepository
 from reckon_core.seo_audit import FindingConfidence, FindingEffort, FindingImpact, HomepageFindingCode
 from reckon_core.tenancy import (
-    OrganizationRole,
     TenantAccessDenied,
     TenantContext,
 )

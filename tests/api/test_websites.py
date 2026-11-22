@@ -35,7 +35,6 @@ from reckon_core.persistence import (
 )
 from reckon_core.repositories import SqlAlchemyCrawlRepository, utc_day
 from reckon_core.tenancy import OrganizationRole
-from reckon_core.websites import website_verification_record_value
 
 
 class StaticTokenVerifier:

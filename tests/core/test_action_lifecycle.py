@@ -1,5 +1,5 @@
 from collections.abc import Iterator
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -15,14 +15,12 @@ from reckon_core.persistence import (
     Base,
     Organization,
     OrganizationMembership,
-    SeoActionProposal,
     User,
     Website,
 )
 from reckon_core.tenancy import (
     AuthenticatedPrincipal,
     OrganizationRole,
-    TenantAccessDenied,
     TenantContext,
 )
 

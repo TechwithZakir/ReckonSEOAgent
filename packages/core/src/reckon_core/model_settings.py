@@ -14,7 +14,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from reckon_core.persistence import AuditEvent, Organization, OrganizationMembership, OrganizationModelSettings
-from reckon_core.tenancy import OrganizationRole, TenantAccessDenied, TenantContext
+from reckon_core.tenancy import TenantAccessDenied, TenantContext
 from reckon_core.permissions import OrganizationPermission, require_permission
 from reckon_core.websites import InvalidWebsiteUrl, normalize_website_url
 

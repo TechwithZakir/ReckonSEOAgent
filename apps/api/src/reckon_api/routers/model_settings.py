@@ -36,7 +36,7 @@ from reckon_core.model_usage_repository import (
 from reckon_core.persistence import OrganizationModelSettings
 from reckon_core.repositories import IdempotencyConflict
 from reckon_core.tenancy import (
-    AuthenticatedPrincipal, OrganizationRole, TenantAccessDenied, TenantContext,
+    AuthenticatedPrincipal, TenantAccessDenied, TenantContext,
 )
 from reckon_core.permissions import OrganizationPermission, require_permission
 

@@ -2,7 +2,7 @@ import asyncio
 import hashlib
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import httpx
 import pytest

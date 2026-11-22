@@ -2,16 +2,13 @@ import base64
 import asyncio
 from dataclasses import dataclass
 from typing import Literal, Protocol
-from uuid import UUID
 from urllib.parse import urlsplit
 
 import httpx
 from pydantic import SecretStr
 
 from reckon_core.crawl_security import (
-    CrawlTargetError,
     DnsAddressLookup,
-    DnsAddressLookupUnavailable,
     PublicDnsAddressResolver,
     resolve_public_crawl_target,
 )
