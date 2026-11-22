@@ -946,3 +946,12 @@ executor, SEO engines and the Claude plugin now exist). Remaining gaps:
 - Not verified: the PHP has never been run or linted (no PHP here) and nothing was tested on a
   real site; activate on staging in the drill. Another SEO plugin printing the same tags can
   produce duplicates, which the public-page verifier would flag for title/H1/description.
+
+## Inbox wording and CI — 2026-11-22
+
+- The approval inbox no longer says "fixture": the button is "Apply now", messages show the
+  verification evidence, and each approved action says how it can be applied (REST, the
+  connector plugin or the Claude plugin) or that it is recommendation-only.
+- Added `.github/workflows/ci.yml`: pyflakes + pytest, web `tsc`/oxlint/Vitest, and
+  `php -l` on `wordpress/` with PHP 7.4. This is the first time the plugin's PHP is syntax
+  checked; it has not run yet. Removed the last unused variable so the pyflakes gate is clean.

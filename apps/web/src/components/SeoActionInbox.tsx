@@ -16,6 +16,17 @@ import {
 import type { SeoAction } from '../lib/seo-actions'
 import type { OrganizationContext } from '../lib/organizations'
 
+const CONNECTOR_NOTE =
+  'Apply now uses the connected WordPress site (needs the Reckon SEO Connector plugin). Otherwise ask the Claude plugin to apply it; Reckon verifies either way.'
+const EXECUTION_HINT: Record<string, string> = {
+  heading: 'Apply now writes the page title through the WordPress REST API, or the Claude plugin can apply it.',
+  meta_title: CONNECTOR_NOTE,
+  meta_description: CONNECTOR_NOTE,
+  canonical: CONNECTOR_NOTE,
+  schema: CONNECTOR_NOTE,
+  other: 'This action type is a recommendation only; Reckon cannot apply or verify it automatically.',
+}
+
 export function SeoActionInbox({
   accessToken,
   organization,
@@ -87,7 +98,7 @@ export function SeoActionInbox({
           reason,
         },
       )
-      setMessage('Action proposed. Approval is required before fixture execution.')
+      setMessage('Action proposed. A reviewer must approve it before anything is changed.')
       setReason('')
       setBeforeValue('')
       setAfterValue('')
@@ -139,8 +150,8 @@ export function SeoActionInbox({
       )
       setMessage(
         result.status === 'verified'
-          ? 'Fixture execution and independent verification passed.'
-          : 'Execution did not verify.',
+          ? `Applied and independently verified. ${describeVerification(result.verification_state) ?? ''}`.trim()
+          : 'Execution did not verify. Nothing is reported as done until Reckon reads it back.',
       )
       await refresh()
     } catch (cause) {
@@ -160,7 +171,7 @@ export function SeoActionInbox({
         organization.organization_id,
         action.proposal_id,
       )
-      setMessage('Action rollback completed in the fixture executor.')
+      setMessage('Action rolled back. The previous value was restored.')
       await refresh()
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not rollback SEO action.')
@@ -237,7 +248,10 @@ export function SeoActionInbox({
                 </div>
               )}
               {action.status === 'approved' && (
-                <button className="button button--primary" type="button" disabled={busy} onClick={() => void execute(action)}>Execute fixture staging action</button>
+                <p>{EXECUTION_HINT[action.action_type] ?? EXECUTION_HINT.other}</p>
+              )}
+              {action.status === 'approved' && (
+                <button className="button button--primary" type="button" disabled={busy} onClick={() => void execute(action)}>Apply now</button>
               )}
               {['executed', 'verified', 'failed'].includes(action.status) && (
                 <button className="button button--secondary" type="button" disabled={busy} onClick={() => void rollback(action)}>Rollback</button>

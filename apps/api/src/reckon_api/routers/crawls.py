@@ -453,7 +453,7 @@ def delete_crawl_schedule(
     except TenantAccessDenied:
         raise HTTPException(status_code=403, detail="Organization schedule management access is required.") from None
     try:
-        schedule = SqlAlchemyCrawlRepository(session).delete_schedule(
+        SqlAlchemyCrawlRepository(session).delete_schedule(
             organization_id=context.organization_id,
             website_id=website_id,
             schedule_id=schedule_id,
