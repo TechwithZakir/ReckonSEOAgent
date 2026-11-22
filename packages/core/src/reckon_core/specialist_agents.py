@@ -26,6 +26,7 @@ from reckon_core.tenancy import (
     TenantContext,
 )
 from reckon_core.permissions import OrganizationPermission, require_permission
+from reckon_core.skills import SkillValidationError, load_skill
 
 _SKILL_FILES = (
     "technical_seo/skills_technical_audit.md",
@@ -286,10 +287,13 @@ def build_prioritization_request(
     """Compose the allowlisted skills and deterministic finding metadata; no page text or tools."""
     skills: list[str] = []
     for relative_path in _SKILL_FILES:
-        content = (skills_root / relative_path).read_text(encoding="utf-8")
-        if not content.strip() or len(content.encode("utf-8")) > 16_384:
-            raise ValueError("A specialist skill is empty or exceeds its size limit.")
-        skills.append(content)
+        try:
+            skill = load_skill(skills_root, relative_path, known_tools=())
+        except SkillValidationError as error:
+            raise ValueError("A specialist skill is empty, invalid or exceeds its size limit.") from error
+        if skill.status != "active" or skill.authorized_tools:
+            raise ValueError("A prioritization skill must be active and grant no tools.")
+        skills.append((skills_root / relative_path).read_text(encoding="utf-8"))
     prompt = (
         "You are a read-only technical SEO prioritization agent. "
         "Follow the trusted skills below. Return only a JSON object with one field "

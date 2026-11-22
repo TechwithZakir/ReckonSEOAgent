@@ -1,5 +1,4 @@
 import {
-  InMemoryWebStorage,
   UserManager,
   WebStorageStateStore,
 } from 'oidc-client-ts'
@@ -100,7 +99,8 @@ export function createOidcUserManager(
     }),
     userStore: new WebStorageStateStore({
       prefix: 'reckon.oidc.user.',
-      store: new InMemoryWebStorage(),
+      // Tab-scoped so a refresh keeps the session; expired users are rejected on restore.
+      store: stateStorage,
     }),
     automaticSilentRenew: false,
     monitorSession: false,

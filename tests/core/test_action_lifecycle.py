@@ -242,3 +242,27 @@ def test_documented_plugin_contract_is_verified_by_the_wordpress_read_back(
         )
         assert done.status == "verified"
         assert done.verification_state["verification"] == "wordpress-independent-read"
+
+
+def test_proposer_cannot_approve_own_medium_risk_action(
+    action_workspace: tuple[sessionmaker[Session], TenantContext, UUID],
+) -> None:
+    factory, context, website_id = action_workspace
+    with factory() as session:
+        lifecycle = SeoActionLifecycle(session)
+        proposal = lifecycle.propose(
+            context,
+            website_id,
+            "meta_title",
+            "https://example.com/",
+            "v1",
+            {"title": "Old title"},
+            {"title": "New title"},
+            "medium",
+            "Improve homepage title",
+            "action-self-approval-001",
+            uuid4(),
+        )
+        session.commit()
+        with pytest.raises(ActionLifecycleConflict, match="different authorized member"):
+            lifecycle.approve(context, proposal.id, proposal.approval_hash, uuid4())

@@ -124,7 +124,7 @@ The database application role must be least-privileged and must not be a superus
 reading organization membership. External identity mappings and user accounts are global
 identity records, not organization-owned rows.
 
-Migrations through `0008_sitemap_document_evidence` have been applied to local PostgreSQL 18.7. The
+Migrations exist through `0021` (action lifecycle with forced RLS); the log records the last verified local PostgreSQL 18.7 state. Celery crawl dispatch, MCP routes, CMS adapters, the SEO action lifecycle and the Claude plugin are implemented inside `apps/api`, `packages/core` and `plugins/`; the `worker`, `mcp_server`, `ai_engine` and `seo_engine` extractions remain planned (see the roadmap in `docs/DEVELOPMENT_LOG.md`). The
 `reckon` application role was verified as non-superuser and non-`BYPASSRLS`; rollback-only
 integration checks cover organization, website, and crawl-run RLS.
 

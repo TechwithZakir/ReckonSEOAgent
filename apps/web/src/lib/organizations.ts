@@ -1,3 +1,5 @@
+export const activeOrganizationKey = 'reckon.active-organization'
+
 export type OrganizationContext = {
   organization_id: string
   role: 'owner' | 'admin' | 'editor' | 'viewer'
@@ -180,6 +182,36 @@ export async function getOrganizationContext(
     },
   )
   return readContext(response)
+}
+
+/**
+ * Restores the organization saved for this browser session. Membership is re-verified by the
+ * API; a 404 clears the saved selection. Returns null when nothing can be restored.
+ */
+export async function restoreSavedOrganization(
+  accessToken: string,
+  storage: Pick<Storage, 'getItem' | 'removeItem'>,
+  fetcher: typeof fetch = fetch,
+): Promise<OrganizationContext | null> {
+  let saved: string | null = null
+  try {
+    saved = storage.getItem(activeOrganizationKey)
+  } catch {
+    return null
+  }
+  if (!saved) return null
+  try {
+    return await getOrganizationContext(accessToken, saved, fetcher)
+  } catch (cause) {
+    if (cause instanceof OrganizationApiError && cause.status === 404) {
+      try {
+        storage.removeItem(activeOrganizationKey)
+      } catch {
+        // ignore
+      }
+    }
+    return null
+  }
 }
 
 export async function renameOrganization(

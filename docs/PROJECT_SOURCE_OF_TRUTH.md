@@ -28,10 +28,10 @@ The foundation includes FastAPI, verified OIDC tenant access, tenant-scoped pers
 organization creation, audit events, request IDs and API health checks. The React dashboard
 supports configured public-client OIDC login, organization selection, website registration
 and DNS TXT ownership verification. The local PostgreSQL database is migrated through
-`0011_membership_discovery`; tenant RLS is exercised with a least-privileged role. The
+`0021` (see `docs/DEVELOPMENT_LOG.md` for the verified state); tenant RLS is exercised with a least-privileged role. The
 dashboard can list and switch between an authenticated user's active organizations. Native
-signup, sign-in, SMTP verification, invitations, member management and organization profile
-editing remain planned. Owners and
+auth, MFA, invitations and member management now exist; SMTP delivery and a real OIDC client are
+unverified. The governed SEO action lifecycle, WordPress executor, MCP tools and Claude plugin exist; see the log's roadmap. Owners and
 admins can store one OpenAI or Anthropic model selection and encrypted API key per organization;
 stored credentials are not yet used or verified by a provider. An internal model
 token ledger and provider-neutral gateway boundary exist, but no real provider adapter, task

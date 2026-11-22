@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     oidc_audience: str | None = None
     oidc_jwks_url: str | None = None
     crawl_daily_limit: int = Field(default=10, ge=1)
+    mcp_daily_tool_call_limit: int = Field(default=500, ge=1)
     crawl_history_retention_days: int = Field(default=365, ge=30, le=3650)
     crawl_worker_enabled: bool = False
     crawl_broker_url: str | None = None
@@ -31,6 +32,8 @@ class Settings(BaseSettings):
     cms_wordpress_username: str | None = None
     cms_wordpress_app_password: SecretStr | None = None
     cms_wordpress_execution_enabled: bool = False
+    # Read-only verification of externally applied changes by fetching the public page.
+    cms_public_verification_enabled: bool = True
 
     model_config = SettingsConfigDict(
         env_prefix="RECKON_",

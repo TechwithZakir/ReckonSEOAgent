@@ -12,3 +12,7 @@ dist/
 !.env.example
 celerybeat-schedule
 celerybeat-schedule-*
+
+# Salesforce CLI artifacts (unrelated to this project)
+.sf/
+.sfdx/

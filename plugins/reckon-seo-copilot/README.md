@@ -11,6 +11,8 @@ approval, and carry out approved changes, with Reckon verifying the result itsel
 - `skills/seo-site-review`: read evidence, rank findings, propose changes.
 - `skills/execute-approved-actions`: claim, apply, read back and report approved changes.
 - `skills/wordpress-apply-action`: WordPress playbook and the state contract Reckon verifies.
+- `skills/wordpress-chrome-admin`: governed fallback that drives wp-admin through the Claude Chrome extension.
+- `skills/seo-audit-loop`: crawl, propose, approve, apply and re-crawl until the audit is clean.
 - `server/reckon_mcp_bridge.py`: thin bridge to the Reckon MCP tool API (needs Python 3.12+
   and `httpx`; no other dependencies).
 
@@ -55,5 +57,6 @@ There is deliberately no approve or reject tool. Approval happens in Reckon by a
   session.
 - Reckon's verifier must be enabled (staging WordPress executor) for actions to reach
   `verified`.
-- Only `heading` (post/page title) has a verified WordPress mapping. Other action types can be proposed as recommendations but are not executed by the skills.
+- Verifiable action types are `meta_title`, `meta_description`, `canonical`, `heading` and `schema`. Reckon confirms them by re-reading the public page (`CMS_PUBLIC_VERIFICATION_ENABLED`, default on outside tests). `redirect`, `internal_link` and `other` stay recommendations. A page cache can delay verification.
+- The Chrome path needs the user to be signed in to wp-admin in their own browser; the plugin never handles WordPress credentials.
 - The skills use whatever WordPress tool Claude has; the plugin does not bundle one or store WordPress credentials.

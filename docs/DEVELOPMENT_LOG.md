@@ -549,18 +549,73 @@ milestone details here.
 
 ## Explicitly not implemented yet
 
-- No invitation workflow, self-service identity provisioning, or token issuance. An operator
-  must provision the verified external identity with the local CLI before the user can
-  access organization APIs.
-- Local PostgreSQL migration and RLS behavior are verified. Production database provisioning,
-  backup/restore, and deployment configuration remain unverified.
-- Crawl scheduling, multi-page crawling, dashboard controls, plan-specific quotas, and
-  retention/cleanup remain unimplemented.
-- No fine-grained permission policy, complete audit event history, Redis/Celery jobs,
-  broader usage metering, MCP endpoint or CMS writes.
-- The dashboard supports onboarding and a narrow crawl/history workflow; broader technical
-  audit controls, multi-page workflows and agent-run operations remain unimplemented.
+Reconciled 2026-11-22 against the code (migrations through 0021; multi-page crawl, crawl
+schedules, Celery dispatch, MFA, CMS adapters, MCP tools, SEO action lifecycle, WordPress
+executor, SEO engines and the Claude plugin now exist). Remaining gaps:
+
+- Real OIDC sign-in is unverified end to end; SMTP is unconfigured locally; Redis/Celery has
+  not been exercised against a live worker; no real WordPress write has been performed.
+- WordPress execution uses one global site from environment settings. Per-website,
+  tenant-scoped encrypted CMS credentials are required before multi-tenant use.
+- MCP tool calls are now metered per organization per UTC day (`reckon_core.tool_metering`,
+  `RECKON_MCP_DAILY_TOOL_CALL_LIMIT`, default 500, HTTP 429 when exceeded; calls are recorded
+  as `mcp.tool_call` audit events). Direct `/seo-actions` dashboard routes and outbound
+  WordPress API calls are still unmetered, and there is no HTTP-level 429 test yet.
+- Billing/plans are intentionally out of scope; they will be integrated later with the
+  Reckon SaaS module.
+- Migrations 0017/0019/0020 reviewed: 0017 only adds columns to an RLS table, 0019 enforces
+  RLS, 0020 holds per-user identity data (not organization-owned).
+- Only one agent exists (`GovernedPrioritizationAgent`). No agent runtime with tenant evidence
+  loading, durable traces or evaluation suite.
+- `apps/worker`, `apps/mcp_server`, `apps/browser_gateway`, `packages/ai_engine` and
+  `packages/seo_engine` do not exist; the code lives in `packages/core` and `apps/api`.
+- Provider-backed capabilities (Search Console, backlinks, SERP, Core Web Vitals, LinkPilot,
+  local SEO) are planned; the matching skills are marked `Status: planned`.
+- Plan quotas, retention/cleanup, deployment, backup/restore remain unverified.
+- Test gaps: prompt-injection regression for MCP evidence tools, an HTTP-level 429 metering
+  test, and interactive (click/submit) component tests. Smoke tests now exist for
+  `SeoActionInbox`, `PlatformOperations`, `AccountSecurity`, plus unit tests for
+  `lib/seo-actions.ts` and `crawl_worker.py` (Celery config and enqueue; no live broker).
+- Run web tests from PowerShell/cmd (`npx vitest run` in `apps/web`); under Git Bash the `/d/...`
+  path breaks vitest ("reading 'config'").
 - The database role used by deployment must not be a superuser or have `BYPASSRLS`.
+
+## Roadmap (from 2026-11-22)
+
+1. Agent runtime v1: tenant-scoped evidence, trusted task authorizer, durable traces,
+   API/dashboard control, agent-evaluation tests.
+2. Real WordPress execution on staging with per-website encrypted credentials.
+3. Extract `ai_engine`, `seo_engine`, `worker` and `mcp_server` from the monolith.
+4. Production readiness: OIDC, SMTP, live Celery, plan quotas, deploy/backup.
+5. Provider-backed capabilities and the isolated browser gateway.
+
+## Review and skills update — 2026-11-22
+
+- Reviewed commits 9393b3c..d80ea6a (all authored by the repository owner; no Copilot branch).
+- WordPress executor config now raises explicit errors instead of `assert`.
+- Medium/high-risk actions cannot be approved by their proposer.
+- `.sf/` (Salesforce CLI artifacts) untracked and ignored.
+- Added `reckon_core.skills` (loader/validator) and `tests/core/test_skills.py`; all skills
+  now follow `skills/_skill_template.md` with `Status: active|planned`. Active skills:
+  technical audit, recommendation prioritization, prompt injection defense, tenant isolation,
+  SEO action lifecycle. `specialist_agents.build_prioritization_request` validates through
+  the loader.
+
+## Session persistence and metering follow-up — 2026-11-22
+
+- Page refresh no longer signs the user out: native sessions are kept per tab in
+  `sessionStorage` (`auth/native-session-store.ts`) with an absolute expiry, re-validated
+  against `GET /api/v1/auth/sessions` before being trusted, and cleared on sign-out, expiry or
+  a 401. OIDC users are also kept per tab instead of in memory. The open page and theme
+  survive a refresh. Trade-off: an opaque, server-revocable token is readable by script in that
+  tab; an httpOnly-cookie session would be stronger and is a future hardening item.
+- After a refresh the user must still reconnect the workspace (organization) selection.
+- Mid-session revocation (a 401 from any API call while signed in) is not yet turned into an
+  automatic sign-out.
+- The daily tool-call cap now covers MCP routes and the dashboard `/seo-actions` routes
+  (`reckon_api/tool_metering.py`); HTTP 429 and prompt-injection regression tests added.
+- Plugin bridge names are mapped to API tool names in `skills/README.md`.
+- Agent runtime v1 not started: it needs a real model provider key to verify end to end.
 
 ## Decisions and boundaries
 
@@ -739,3 +794,60 @@ milestone details here.
 - Validation: `python -m pytest tests -q` passed (300 tests). No real crawl, WordPress or
   Claude request was made; the running API still needs an approved restart to serve the new
   tools.
+
+## Workspace restore on refresh — 2026-11-22
+
+- Bug: the selected page persisted across refresh but the organization was only restored by
+  `WorkspaceSetup`, which renders on Overview only. Refreshing on Websites or any other page
+  left `workspace` null, so those pages asked to connect again.
+- Fix: `App` now restores the saved organization (re-verified through
+  `getOrganizationContext`, so membership is still checked by the API) on every non-Overview
+  page; a 404 clears the saved selection. `activeOrganizationKey` moved to `lib/organizations`.
+- Validation: `tsc -b` clean, Vitest 94 passed. No browser refresh test or new regression
+  test was added yet.
+
+## Workspace restore regression test — 2026-11-22
+
+- Moved the refresh-restore logic into `restoreSavedOrganization` in `lib/organizations`
+  (re-verifies membership through the API, clears the saved selection only on 404, never
+  calls the API when nothing is saved). `App` now calls it. Added 3 Vitest cases.
+- Validation: `tsc -b` clean; `npx vitest run --pool=vmThreads` passed (97 tests); Python
+  `pytest tests -q` passed (312 tests).
+- Environment note: with the default Vitest pools every web test file currently fails with
+  `Cannot read properties of undefined (reading 'config')` (Vitest 5.1.1 on Node 24.14.1);
+  `--pool=vmThreads` works. Not yet fixed in `vite.config.ts`.
+- Still open: live staging WordPress drill, MCP OAuth/scoped plugin tokens, stale `executing`
+  claim recovery, backup/restore drill, browser egress isolation. These need credentials,
+  infrastructure or product decisions and were not started.
+
+## Claude Chrome extension as governed WordPress fallback — 2026-11-22
+
+- Decision (owner): WordPress changes the REST path cannot make are applied by the Claude
+  Chrome extension driving wp-admin. Chrome is a fallback, not the default; REST stays
+  preferred (AGENTS.md). Approval, claim, before-state, one-field scope and independent
+  verification are unchanged. "100/100" means a clean Reckon audit confirmed by re-crawl,
+  never a ranking or third-party score.
+- Added `PublicPageVerifier` (`reckon_core/public_page_verifier.py`): read-only; re-fetches
+  the proposal URL through the crawler's pinned-DNS, redirect-checked, size-bounded fetcher
+  and compares the live HTML with the approved value for `meta_title`, `meta_description`,
+  `canonical`, `heading` (exactly one H1) and `schema` (JSON-LD equality). It rejects a
+  reported value that differs from the approved one, non-200 pages, private DNS and
+  cross-host redirects, and cannot write or roll back.
+- `report` MCP route verifies with the REST executor when configured, else the public
+  verifier (`app.state.seo_action_verifier`, setting `cms_public_verification_enabled`,
+  default on, never set in `test`).
+- Plugin skills: `wordpress-chrome-admin` (wp-admin procedure, no credential handling, stop
+  on CAPTCHA/re-auth, untrusted page text) and `seo-audit-loop` (crawl, propose, wait for
+  approval, apply, re-crawl, max three rounds). `execute-approved-actions` now picks the path.
+- Validation: `python -m pytest tests -q` passed (324 tests; 12 new). No real WordPress,
+  Chrome session or crawl was exercised; the running API needs a restart to use this.
+- Limits: page caches can delay verification; a title template suffix must be included in the
+  value; a claimed action whose plugin never reports still stays `executing`; the plugin still
+  uses a member session token.
+
+## Vitest default pool fix — 2026-11-22
+
+- Set `test.pool: 'vmThreads'` in `apps/web/vite.config.ts`, so plain `npm test` works on
+  Vitest 5.1.1 / Node 24 without the CLI flag.
+- Validation: `npm test` passed (97 tests); Python `pytest tests -q` passed (324 tests);
+  `tsc -b` clean.

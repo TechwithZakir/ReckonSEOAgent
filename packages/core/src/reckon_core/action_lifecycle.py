@@ -229,6 +229,10 @@ class SeoActionLifecycle:
             if proposal.status == "approved":
                 return proposal
             raise ActionLifecycleConflict("The proposal is not approvable.")
+        if proposal.risk != "low" and proposal.actor_user_id == context.principal.user_id:
+            raise ActionLifecycleConflict(
+                "A different authorized member must approve this medium or high risk action."
+            )
         now = datetime.now(timezone.utc)
         expiry = proposal.expires_at
         if expiry.tzinfo is None:

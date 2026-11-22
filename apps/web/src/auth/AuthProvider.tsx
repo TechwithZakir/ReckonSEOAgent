@@ -9,7 +9,12 @@ import type { ReactNode } from 'react'
 import type { User } from 'oidc-client-ts'
 import { AuthContext } from './AuthContext'
 import type { AuthStatus } from './AuthContext'
-import { NativeAuthError, signOutNative } from '../lib/native-auth'
+import { NativeAuthError, listNativeSessions, signOutNative } from '../lib/native-auth'
+import {
+  clearNativeSession,
+  loadNativeSession,
+  saveNativeSession,
+} from './native-session-store'
 import type { NativeSession } from '../lib/native-auth'
 import {
   createOidcUserManager,
@@ -37,6 +42,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     config.kind === 'configured' ? 'initializing' : 'unconfigured',
   )
   const [error, setError] = useState<string | null>(null)
+  const [restoring, setRestoring] = useState(
+    () => loadNativeSession(window.sessionStorage) !== null,
+  )
   const initializationRef = useRef<Promise<User | null> | null>(null)
   const sessionId = useMemo(
     () => user || nativeSession ? crypto.randomUUID() : null,
@@ -83,7 +91,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               ? currentUser
               : null
           setUser(validUser)
-          setStatus(validUser ? 'signed-in' : 'signed-out')
+          setStatus((previous) =>
+            validUser ? 'signed-in' : previous === 'signed-in' ? previous : 'signed-out',
+          )
           setError(null)
         }
       })
@@ -101,6 +111,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [manager])
 
+  useEffect(() => {
+    // Restore a native session after a page refresh, but only if the server still accepts it.
+    const stored = loadNativeSession(window.sessionStorage)
+    if (!stored) {
+      return
+    }
+    let active = true
+    void listNativeSessions(stored.access_token)
+      .then(() => {
+        if (active) {
+          setUser(null)
+          setNativeSession(stored)
+          setStatus('signed-in')
+        }
+      })
+      .catch((cause: unknown) => {
+        if (cause instanceof NativeAuthError && cause.status === 401) {
+          clearNativeSession(window.sessionStorage)
+        }
+      })
+      .finally(() => {
+        if (active) setRestoring(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
   const signIn = useCallback(async () => {
     if (!manager) {
       return
@@ -115,6 +153,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const acceptNativeSession = useCallback((session: NativeSession) => {
     setUser(null)
+    saveNativeSession(window.sessionStorage, session)
     setNativeSession(session)
     setStatus('signed-in')
     setError(null)
@@ -123,6 +162,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!nativeSession) return
     const timer = window.setTimeout(() => {
+      clearNativeSession(window.sessionStorage)
       setNativeSession(null)
       setStatus(manager ? 'signed-out' : 'unconfigured')
       setError('Your session expired. Please sign in again.')
@@ -141,6 +181,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           return
         }
       }
+      clearNativeSession(window.sessionStorage)
       setNativeSession(null)
       setStatus(manager ? 'signed-out' : 'unconfigured')
       return
@@ -158,13 +199,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo(
     () => ({
-      config, status,
+      config, status: restoring ? ('initializing' as const) : status,
       user: nativeSession
         ? { access_token: nativeSession.access_token, profile: { sub: nativeSession.user_id, iss: 'reckon-native' } }
         : user,
       sessionId, error, signIn, signOut, acceptNativeSession,
     }),
-    [config, status, user, nativeSession, sessionId, error, signIn, signOut, acceptNativeSession],
+    [config, status, restoring, user, nativeSession, sessionId, error, signIn, signOut, acceptNativeSession],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

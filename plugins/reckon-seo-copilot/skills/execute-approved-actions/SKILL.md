@@ -8,11 +8,13 @@ description: Apply human-approved Reckon SEO actions to the website and report t
 Only act on actions a human has already approved in Reckon.
 
 1. Call `reckon_approved_actions` for the website. Do nothing for anything not listed.
-2. Skip, and tell the user about, any action whose `action_type` is not supported by the
-   `wordpress-apply-action` skill (currently only `heading`). Do not claim it.
+2. Choose the path per action. Use `wordpress-apply-action` (REST/connector) when it can
+   make the change (currently `heading`); otherwise use `wordpress-chrome-admin` for
+   `meta_title`, `meta_description`, `canonical`, `heading` or `schema`. Skip, and tell the
+   user about, any other `action_type`. Do not claim it.
 3. For one supported action, call `reckon_claim_action`. If it fails (for example HTTP
    409), someone else owns it: stop and do not write.
-4. Perform the write and read-back exactly as the `wordpress-apply-action` skill describes,
+4. Perform the write and read-back exactly as the chosen skill describes,
    then call `reckon_report_action` with the observed state. If you cannot complete the
    write, report `failed` rather than leaving the claim open.
 5. Tell the user the status Reckon returns. Say "verified" only when

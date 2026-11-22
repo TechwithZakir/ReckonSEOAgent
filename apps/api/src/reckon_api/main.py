@@ -35,6 +35,7 @@ from reckon_core.oidc import OidcTokenVerifier
 from reckon_api.crawl_worker import CeleryCrawlQueue, create_celery_app
 from pydantic import SecretStr
 from reckon_core.action_executor import FixtureActionExecutor
+from reckon_core.public_page_verifier import PublicPageVerifier
 from reckon_core.wordpress_executor import WordPressActionExecutor
 
 
@@ -91,9 +92,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if app_settings.environment == "test":
         app.state.seo_action_executor = FixtureActionExecutor()
     elif app_settings.cms_wordpress_execution_enabled:
-        assert app_settings.cms_wordpress_base_url is not None
-        assert app_settings.cms_wordpress_username is not None
-        assert app_settings.cms_wordpress_app_password is not None
+        if (
+            app_settings.cms_wordpress_base_url is None
+            or app_settings.cms_wordpress_username is None
+            or app_settings.cms_wordpress_app_password is None
+        ):
+            raise RuntimeError("WordPress execution requires base URL, username and app password.")
         app.state.seo_action_executor = WordPressActionExecutor(
             app_settings.cms_wordpress_base_url,
             app_settings.cms_wordpress_username,
@@ -101,6 +105,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
     else:
         app.state.seo_action_executor = None
+    app.state.seo_action_verifier = (
+        PublicPageVerifier()
+        if app_settings.environment != "test" and app_settings.cms_public_verification_enabled
+        else None
+    )
     app.state.verification_mailer = (
         SmtpVerificationMailer(app_settings)
         if app_settings.smtp_host and app_settings.smtp_from and app_settings.web_public_origin

@@ -30,5 +30,29 @@ An agent run must declare:
 - `reporting/`: reporting and recommendation prioritization
 - `product/`: solution product, UX, SaaS and implementation knowledge
 
+## Format and validation
+
+Every skill follows `_skill_template.md`, including a `Status: active|planned` line.
+`active` skills are backed by real code and may list only registered MCP tools; `planned`
+skills document intent and grant no tools. `reckon_core.skills` loads and validates them and
+`tests/core/test_skills.py` lints the whole directory. `product/` holds reference knowledge,
+not agent skills.
+
 Skills are guidance for deterministic and agent-assisted work. They must not grant tools or
 bypass the central policy engine.
+
+## Plugin tool name mapping
+
+The Claude plugin (`plugins/reckon-seo-copilot`) exposes the same governed MCP tools under
+bridge names. Skills here always use the API names.
+
+| Plugin bridge name | API tool name |
+|---|---|
+| `reckon_crawl_list` | `reckon.crawl.list` |
+| `reckon_start_crawl` | `reckon.crawl.start` |
+| `reckon_website_evidence` | `reckon.website.evidence.get` |
+| `reckon_engine_audit` | `reckon.engine.audit.get` |
+| `reckon_propose_action` | `reckon.seo_action.propose` |
+| `reckon_approved_actions` | `reckon.seo_action.approved.list` |
+| `reckon_claim_action` | `reckon.seo_action.claim` |
+| `reckon_report_action` | `reckon.seo_action.report` |

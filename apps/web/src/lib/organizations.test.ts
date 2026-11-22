@@ -6,6 +6,8 @@ import {
   listOrganizations,
   OrganizationApiError,
   renameOrganization,
+  restoreSavedOrganization,
+  activeOrganizationKey,
 } from './organizations'
 
 describe('organization API client', () => {
@@ -155,5 +157,48 @@ describe('organization API client', () => {
       { headers: { Authorization: 'Bearer token' }, cache: 'no-store' },
     )
     await expect(listOrganizationMembers('token', id, null, fetcher)).rejects.toThrow('invalid member list')
+  })
+})
+
+describe('restoreSavedOrganization', () => {
+  const orgId = 'bca7dcf3-908e-4dcf-a985-5cc68f2355ea'
+  const fakeStorage = (initial: string | null) => {
+    let value = initial
+    return {
+      getItem: vi.fn(() => value),
+      removeItem: vi.fn(() => { value = null }),
+    }
+  }
+
+  it('re-verifies the saved organization through the API', async () => {
+    const fetcher = vi.fn<typeof fetch>(async () =>
+      new Response(JSON.stringify({ organization_id: orgId, role: 'admin' }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    await expect(restoreSavedOrganization('tok', fakeStorage(orgId), fetcher))
+      .resolves.toEqual({ organization_id: orgId, role: 'admin' })
+    expect(fetcher).toHaveBeenCalledWith(
+      `/api/v1/organizations/${orgId}/context`,
+      expect.objectContaining({ headers: { Authorization: 'Bearer tok' } }),
+    )
+  })
+
+  it('does not call the API when nothing is saved', async () => {
+    const fetcher = vi.fn<typeof fetch>()
+    await expect(restoreSavedOrganization('tok', fakeStorage(null), fetcher)).resolves.toBeNull()
+    expect(fetcher).not.toHaveBeenCalled()
+  })
+
+  it('clears the saved selection on 404 but keeps it on other failures', async () => {
+    const gone = fakeStorage(orgId)
+    await restoreSavedOrganization('tok', gone, vi.fn<typeof fetch>(async () =>
+      new Response('{}', { status: 404 })))
+    expect(gone.removeItem).toHaveBeenCalledWith(activeOrganizationKey)
+
+    const flaky = fakeStorage(orgId)
+    await expect(restoreSavedOrganization('tok', flaky, vi.fn<typeof fetch>(async () =>
+      new Response('{}', { status: 500 })))).resolves.toBeNull()
+    expect(flaky.removeItem).not.toHaveBeenCalled()
   })
 })

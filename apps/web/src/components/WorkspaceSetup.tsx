@@ -1,13 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import {
+  activeOrganizationKey,
   createOrganization,
   getOrganizationContext,
   listOrganizations,
 } from '../lib/organizations'
 import type { OrganizationContext, OrganizationPage } from '../lib/organizations'
-
-const activeOrganizationKey = 'reckon.active-organization'
 
 export function WorkspaceSetup({
   accessToken,

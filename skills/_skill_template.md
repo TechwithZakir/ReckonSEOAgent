@@ -1,4 +1,9 @@
 # Skill: {Skill Name}
+Status: active
+
+<!-- Status is `active` (backed by real code/tools) or `planned`. Active skills may list only
+tools registered in reckon_api.routers.mcp. Authorized Tools lines use "- `tool.name`" or "none".
+Validated by reckon_core.skills and tests/core/test_skills.py. -->
 
 ## Purpose
 

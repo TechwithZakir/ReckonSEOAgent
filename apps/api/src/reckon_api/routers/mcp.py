@@ -16,6 +16,7 @@ from reckon_api.routers.crawls import (
 )
 from reckon_api.routers.seo_actions import ProposeSeoActionRequest
 from reckon_api.tenant_access import resolve_organization_access
+from reckon_api.tool_metering import meter_tool_call
 from reckon_core.action_lifecycle import ActionLifecycleConflict, SeoActionLifecycle
 from reckon_core.persistence import CrawlRun, SeoActionProposal
 from reckon_core.seo_engines import EngineName, audit_engine
@@ -27,6 +28,7 @@ from sqlalchemy import select
 
 
 router = APIRouter(prefix="/api/v1/mcp", tags=["MCP"])
+METERED = [Depends(meter_tool_call)]
 
 
 McpToolName = Literal[
@@ -137,6 +139,7 @@ class McpEngineAuditResponse(BaseModel):
 
 @router.post(
     f"/organizations/{{organization_id}}/tools/{CRAWL_START_TOOL}/invoke",
+    dependencies=METERED,
     response_model=McpEvidenceResponse,
 )
 def start_crawl_tool(
@@ -208,6 +211,7 @@ def _crawl_viewer_context(
 
 @router.post(
     f"/organizations/{{organization_id}}/tools/{EVIDENCE_TOOL}/invoke",
+    dependencies=METERED,
     response_model=McpEvidenceResponse,
 )
 def website_evidence_tool(
@@ -223,6 +227,7 @@ def website_evidence_tool(
 
 @router.post(
     f"/organizations/{{organization_id}}/tools/{ENGINE_AUDIT_TOOL}/invoke",
+    dependencies=METERED,
     response_model=McpEngineAuditResponse,
 )
 def engine_audit_tool(
@@ -326,6 +331,7 @@ def _manager_context(
 
 @router.post(
     f"/organizations/{{organization_id}}/tools/{LIST_APPROVED_TOOL}/invoke",
+    dependencies=METERED,
     response_model=list[McpExecutableAction],
 )
 def list_approved_actions_tool(
@@ -351,6 +357,7 @@ def list_approved_actions_tool(
 
 @router.post(
     f"/organizations/{{organization_id}}/tools/{CLAIM_TOOL}/invoke",
+    dependencies=METERED,
     response_model=McpExecutableAction,
 )
 def claim_action_tool(
@@ -376,6 +383,7 @@ def claim_action_tool(
 
 @router.post(
     f"/organizations/{{organization_id}}/tools/{REPORT_TOOL}/invoke",
+    dependencies=METERED,
     response_model=McpExecutionStatus,
 )
 def report_action_tool(
@@ -387,7 +395,11 @@ def report_action_tool(
 ) -> McpExecutionStatus:
     """Record the plugin's claim; success is reported only after Reckon's own read-back."""
     context = _manager_context(organization_id, principal, session)
-    verifier = getattr(http_request.app.state, "seo_action_executor", None)
+    # A configured REST executor keeps verifying its own action types; otherwise Reckon reads
+    # the public page, which is how changes made through the browser are confirmed.
+    verifier = getattr(http_request.app.state, "seo_action_executor", None) or getattr(
+        http_request.app.state, "seo_action_verifier", None
+    )
     try:
         proposal = SeoActionLifecycle(session).report_external(
             context,
@@ -411,6 +423,7 @@ def report_action_tool(
 
 @router.post(
     f"/organizations/{{organization_id}}/tools/{PROPOSE_TOOL}/invoke",
+    dependencies=METERED,
     response_model=McpProposalResponse,
 )
 def propose_seo_action_tool(
@@ -475,6 +488,7 @@ def propose_seo_action_tool(
 
 @router.post(
     "/organizations/{organization_id}/tools/{tool_name}/invoke",
+    dependencies=METERED,
     response_model=McpInvokeResponse,
 )
 def invoke_mcp_tool(

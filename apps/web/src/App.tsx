@@ -13,6 +13,7 @@ import { OrganizationMembers } from './components/OrganizationMembers'
 import { WorkspacePages } from './components/WorkspacePages'
 import { WorkspaceSetup } from './components/WorkspaceSetup'
 import { WebsiteOnboarding } from './components/WebsiteOnboarding'
+import { restoreSavedOrganization } from './lib/organizations'
 import type { OrganizationContext } from './lib/organizations'
 import { checkPlatformHealth } from './lib/service-health'
 import type { PlatformHealth, ServiceState } from './lib/service-health'
@@ -208,6 +209,10 @@ function HealthRow({
   )
 }
 
+const navigationLabels = new Set(
+  navigationGroups.flatMap((group) => group.items.map((item) => item.label)),
+)
+
 function App() {
   const [path, setPath] = useState(() => window.location.pathname)
   useEffect(() => {
@@ -227,12 +232,40 @@ function App() {
 
 function Dashboard({ onNavigate }: { onNavigate: (path: string) => void }) {
   const auth = useAuth()
-  const [theme, setTheme] = useState<'light' | 'dark'>('light')
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    try {
+      return window.localStorage.getItem('reckon.theme') === 'dark' ? 'dark' : 'light'
+    } catch {
+      return 'light'
+    }
+  })
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('reckon.theme', theme)
+    } catch {
+      // preference storage is optional
+    }
+  }, [theme])
   const [health, setHealth] = useState<PlatformHealth>(initialHealth)
   const [checkedAt, setCheckedAt] = useState<Date | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [platformAdmin, setPlatformAdmin] = useState(false)
-  const [activeNavigation, setActiveNavigation] = useState('Overview')
+  const [activeNavigation, setActiveNavigation] = useState(() => {
+    // Keep the open page across a refresh; only known page labels are accepted.
+    try {
+      const saved = window.sessionStorage.getItem('reckon.nav')
+      return saved && navigationLabels.has(saved) ? saved : 'Overview'
+    } catch {
+      return 'Overview'
+    }
+  })
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem('reckon.nav', activeNavigation)
+    } catch {
+      // navigation persistence is optional
+    }
+  }, [activeNavigation])
   const [workspaceState, setWorkspaceState] = useState<{
     subject: string
     context: OrganizationContext
@@ -253,6 +286,20 @@ function Dashboard({ onNavigate }: { onNavigate: (path: string) => void }) {
     },
     [subject],
   )
+
+  // WorkspaceSetup only renders on Overview, so restore the saved organization here too;
+  // otherwise a refresh on any other page loses the workspace.
+  const accessToken = auth.status === 'signed-in' ? auth.user?.access_token : undefined
+  useEffect(() => {
+    if (!accessToken || !subject || workspace || activeNavigation === 'Overview') {
+      return
+    }
+    let active = true
+    void restoreSavedOrganization(accessToken, window.sessionStorage).then((context) => {
+      if (active && context) handleWorkspaceConnected(context)
+    })
+    return () => { active = false }
+  }, [accessToken, subject, workspace, activeNavigation, handleWorkspaceConnected])
 
   const refreshHealth = useCallback(async (showSpinner = false) => {
     const currentRequest = ++requestId.current

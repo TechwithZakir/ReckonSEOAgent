@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from reckon_api.dependencies import get_authenticated_principal, get_database_session
 from reckon_api.tenant_access import resolve_organization_access
+from reckon_api.tool_metering import meter_tool_call
 from reckon_core.action_lifecycle import (
     ActionLifecycleConflict,
     SeoActionLifecycle,
@@ -21,6 +22,7 @@ from reckon_core.tenancy import AuthenticatedPrincipal, OrganizationRole, Tenant
 router = APIRouter(
     prefix="/api/v1/organizations/{organization_id}/seo-actions",
     tags=["SEO actions"],
+    dependencies=[Depends(meter_tool_call)],
 )
 
 
