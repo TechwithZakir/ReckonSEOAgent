@@ -229,3 +229,57 @@ export async function rollbackSeoAction(
   }
   return value
 }
+
+const ERROR_TEXT: Record<string, string> = {
+  external_claim_timeout:
+    'The executor claimed this action but never reported, and the live page did not show the approved value. It can be re-proposed or rolled back.',
+  external_execution_failed: 'The external executor reported that it could not apply the change.',
+  human_rejected: 'A reviewer rejected this action.',
+  PublicVerificationFailed:
+    'Reckon read the live page and it does not match the approved value. A page cache can delay this; try again shortly.',
+  TargetVersionMismatch: 'The page changed after approval, so nothing was written.',
+  UnsupportedVerification: 'This action type cannot be verified from the public page.',
+  UnsupportedWordPressAction: 'The WordPress connection has no field mapping for this action type.',
+  WordPressVerificationFailed: 'WordPress did not confirm the approved value.',
+}
+
+export function describeError(code: string | null): string | null {
+  if (code === null) return null
+  return ERROR_TEXT[code] ?? `The action failed (${code}).`
+}
+
+export function statusNote(action: SeoAction): string | null {
+  switch (action.status) {
+    case 'executing':
+      return 'Claimed by an executor. Reckon verifies the live page when it reports, and settles claims that stay silent for 15 minutes.'
+    case 'executed':
+      return 'Applied, waiting for independent verification.'
+    case 'verified':
+      return 'Applied and confirmed by Reckon reading the live state back.'
+    case 'rolled_back':
+      return 'The original value was restored.'
+    default:
+      return null
+  }
+}
+
+export function describeVerification(state: Record<string, string> | null): string | null {
+  if (state === null) return null
+  const method: Record<string, string> = {
+    'public-page-readback': 'live page read-back',
+    'wordpress-independent-read': 'WordPress read-back',
+    'fixture-confirmed': 'fixture check',
+  }
+  const how = method[state.verification] ?? 'read-back'
+  const value = state.value ? ` — "${state.value}"` : ''
+  const page = state.page_url ? ` (${state.page_url})` : ''
+  return `Confirmed by ${how}${value}${page}`
+}
+
+export function wasRecovered(action: SeoAction): boolean {
+  return action.executed_state?.execution === 'recovered-by-readback'
+}
+
+export function hasInFlightClaim(actions: SeoAction[]): boolean {
+  return actions.some((action) => action.status === 'executing')
+}

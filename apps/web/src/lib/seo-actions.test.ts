@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   approveSeoAction,
+  describeError,
+  describeVerification,
+  hasInFlightClaim,
+  statusNote,
+  wasRecovered,
   executeSeoAction,
   listSeoActions,
   proposeSeoAction,
@@ -105,5 +110,37 @@ describe('seo action client', () => {
     const back = json({ ...ACTION, status: 'rolled_back' })
     await rollbackSeoAction('tok', ORG, ACTION.proposal_id, back)
     expect((back as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatch(/\/rollback$/)
+  })
+})
+
+describe('action presentation', () => {
+  const action = ACTION as unknown as Parameters<typeof statusNote>[0]
+
+  it('explains known failure codes and falls back for unknown ones', () => {
+    expect(describeError(null)).toBeNull()
+    expect(describeError('external_claim_timeout')).toContain('never reported')
+    expect(describeError('PublicVerificationFailed')).toContain('does not match')
+    expect(describeError('Weird')).toBe('The action failed (Weird).')
+  })
+
+  it('describes verification evidence and recovered claims', () => {
+    expect(describeVerification(null)).toBeNull()
+    expect(
+      describeVerification({
+        verification: 'public-page-readback',
+        value: 'New title | Site',
+        page_url: 'https://example.com/p',
+      }),
+    ).toBe('Confirmed by live page read-back — "New title | Site" (https://example.com/p)')
+    expect(wasRecovered({ ...action, executed_state: { execution: 'recovered-by-readback' } })).toBe(true)
+    expect(wasRecovered(action)).toBe(false)
+  })
+
+  it('notes in-flight claims so the inbox keeps polling', () => {
+    const executing = { ...action, status: 'executing' as const }
+    expect(statusNote(executing)).toContain('15 minutes')
+    expect(statusNote(action)).toBeNull()
+    expect(hasInFlightClaim([action, executing])).toBe(true)
+    expect(hasInFlightClaim([action])).toBe(false)
   })
 })

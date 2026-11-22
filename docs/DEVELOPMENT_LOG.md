@@ -869,3 +869,11 @@ executor, SEO engines and the Claude plugin now exist). Remaining gaps:
   and was not added; they are applied through the Chrome path.
 - Validation: `python -m pytest tests -q` passed (329 tests; 5 new). No real site, browser or
   restart; the running API still needs an approved restart.
+
+## Approval inbox shows the hardened lifecycle — 2026-11-22
+
+- `SeoActionInbox` now shows before/proposed values and expiry, plain-language failure text
+  (`describeError`), a note per state (`statusNote`), human-readable verification evidence
+  (`describeVerification`) and a banner when a silent claim was settled by read-back
+  (`wasRecovered`). While any action is `executing` the list re-fetches every 15 s.
+- Validation: `tsc -b` clean; `npm test` passed (100 tests; 3 new). Not exercised in a browser.

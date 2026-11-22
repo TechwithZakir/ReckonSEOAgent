@@ -2,11 +2,16 @@ import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import {
   approveSeoAction,
+  describeError,
+  describeVerification,
   executeSeoAction,
+  hasInFlightClaim,
   listSeoActions,
   proposeSeoAction,
   rejectSeoAction,
   rollbackSeoAction,
+  statusNote,
+  wasRecovered,
 } from '../lib/seo-actions'
 import type { SeoAction } from '../lib/seo-actions'
 import type { OrganizationContext } from '../lib/organizations'
@@ -49,6 +54,17 @@ export function SeoActionInbox({
       })
     return () => { active = false }
   }, [accessToken, organization.organization_id])
+
+  const watching = hasInFlightClaim(actions)
+  useEffect(() => {
+    if (!watching) return undefined
+    const timer = window.setInterval(() => {
+      void listSeoActions(accessToken, organization.organization_id)
+        .then(setActions)
+        .catch(() => undefined)
+    }, 15000)
+    return () => window.clearInterval(timer)
+  }, [watching, accessToken, organization.organization_id])
 
   const propose = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -198,10 +214,22 @@ export function SeoActionInbox({
         {actions.map((action) => (
           <article className="workspace-card" key={action.proposal_id}>
             <div className="workspace-card__content">
-              <span className="status-label status-label--muted">{action.status}</span>
+              <span className={`status-label status-label--${action.status === 'verified' ? 'healthy' : action.status === 'failed' ? 'unavailable' : 'muted'}`}>{action.status.replace('_', ' ')}</span>
               <h3>{action.action_type} · {action.risk} risk</h3>
               <p>{action.target_url}</p>
               <p>Reason: {action.reason}</p>
+              <dl>
+                <dt>Before</dt><dd>{action.before_state.value ?? '—'}</dd>
+                <dt>Proposed</dt><dd>{action.proposed_state.value ?? '—'}</dd>
+                <dt>Expires</dt><dd>{new Date(action.expires_at).toLocaleString()}</dd>
+              </dl>
+              {statusNote(action) && <p role="status">{statusNote(action)}</p>}
+              {wasRecovered(action) && (
+                <p role="status">The executor never reported; Reckon found the approved value live and recorded it as verified.</p>
+              )}
+              {describeError(action.error_code) && (
+                <p className="workspace-setup__error" role="alert">{describeError(action.error_code)}</p>
+              )}
               {action.status === 'proposed' && (
                 <div>
                   <button className="button button--primary" type="button" disabled={busy} onClick={() => void decide(action, 'approve')}>Approve</button>
@@ -214,8 +242,8 @@ export function SeoActionInbox({
               {['executed', 'verified', 'failed'].includes(action.status) && (
                 <button className="button button--secondary" type="button" disabled={busy} onClick={() => void rollback(action)}>Rollback</button>
               )}
-              {action.verification_state && (
-                <p>Verification: {JSON.stringify(action.verification_state)}</p>
+              {describeVerification(action.verification_state) && (
+                <p>{describeVerification(action.verification_state)}</p>
               )}
             </div>
           </article>
