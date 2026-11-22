@@ -3,6 +3,7 @@ import type { FormEvent } from 'react'
 import { AccountSecurity } from './AccountSecurity'
 import { AIModelSettings } from './AIModelSettings'
 import { OrganizationMembers } from './OrganizationMembers'
+import { PluginTokens } from './PluginTokens'
 import { SeoActionInbox } from './SeoActionInbox'
 import { WebsiteOnboarding } from './WebsiteOnboarding'
 import type { OrganizationContext } from '../lib/organizations'
@@ -405,6 +406,9 @@ export function WorkspacePages({ page, accessToken, organization }: Props) {
             accessToken={accessToken}
             organization={organization}
           />
+        )}
+        {organization && accessToken && (
+          <PluginTokens accessToken={accessToken} organization={organization} />
         )}
         {accessToken && (
           <AccountSecurity accessToken={accessToken} />

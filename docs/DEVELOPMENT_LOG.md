@@ -904,3 +904,11 @@ executor, SEO engines and the Claude plugin now exist). Remaining gaps:
   procedures only; no drill was run.
 - Validation: `pytest tests -q` passed (331 tests; 2 new). The migration was not run against
   PostgreSQL here, and the dashboard has no token-management screen yet.
+
+## Plugin token screen — 2026-11-22
+
+- Workspace Settings now has a "Claude plugin tokens" panel (Owner/Admin only): create with a
+  label and 1-90 day lifetime, one-time display of the token, list with state and last use,
+  revoke. Client: `lib/plugin-tokens.ts` (response validation, `tokenState`).
+- Validation: `tsc -b` clean, `npm test` passed (103 tests; 3 new), `oxlint` clean. Not
+  exercised in a browser; scopes use the server defaults (no scope picker yet).
