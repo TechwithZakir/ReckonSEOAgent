@@ -912,3 +912,12 @@ executor, SEO engines and the Claude plugin now exist). Remaining gaps:
   revoke. Client: `lib/plugin-tokens.ts` (response validation, `tokenState`).
 - Validation: `tsc -b` clean, `npm test` passed (103 tests; 3 new), `oxlint` clean. Not
   exercised in a browser; scopes use the server defaults (no scope picker yet).
+
+## Migration 0022 applied to the local database — 2026-11-22
+
+- `alembic upgrade head` ran against the local PostgreSQL (was `0021_seo_action_lifecycle`,
+  now `0022_plugin_tokens`); the change only adds the `plugin_tokens` table. No API process was
+  running, so no restart was needed. `pytest tests -q` passed (331).
+- Not done: REST writes for SEO-plugin fields (needs the plugin name and a live site to
+  verify), a real browser refresh test (needs a signed-in session), and the egress and
+  backup drills (infrastructure; see `docs/OPERATIONS_RUNBOOKS.md`).
