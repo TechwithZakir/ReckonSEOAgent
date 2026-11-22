@@ -164,3 +164,77 @@ def test_invalid_configuration_is_rejected() -> None:
         WordPressActionExecutor(
             "https://staging.example.com", "u", SecretStr("p"), field_map={"heading": "status"}
         )
+
+
+class FakeConnectorWordPress:
+    """WordPress with the Reckon SEO Connector: meta is returned and written under `meta`."""
+
+    def __init__(self, plugin_active: bool = True, meta: dict[str, str] | None = None) -> None:
+        self.plugin_active = plugin_active
+        self.meta = {"reckon_seo_title": "", "reckon_seo_description": "",
+                     "reckon_seo_canonical": "", "reckon_seo_schema": ""}
+        self.meta.update(meta or {})
+        self.version = "2026-01-01T00:00:00"
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            for key, value in json.loads(request.content)["meta"].items():
+                assert key in self.meta
+                self.meta[key] = value
+            self.version = "2026-01-02T00:00:00"
+        body: dict[str, object] = {"title": {"raw": "Page"}, "modified_gmt": self.version}
+        if self.plugin_active:
+            body["meta"] = dict(self.meta)
+        return httpx.Response(200, json=body)
+
+
+def connector(wordpress: FakeConnectorWordPress) -> WordPressActionExecutor:
+    from reckon_core.wordpress_executor import CONNECTOR_FIELD_MAP
+
+    return WordPressActionExecutor(
+        "https://staging.example.com", "fixture-user", SecretStr("fixture-app-password"),
+        field_map=CONNECTOR_FIELD_MAP, transport=httpx.MockTransport(wordpress),
+        resolver=PublicResolver(),
+    )
+
+
+@pytest.mark.parametrize(
+    ("action", "key", "value"),
+    [
+        ("meta_title", "reckon_seo_title", "Better title"),
+        ("meta_description", "reckon_seo_description", "A clear description."),
+        ("canonical", "reckon_seo_canonical", "https://staging.example.com/post/"),
+        ("schema", "reckon_seo_schema", json.dumps({"@type": "Article", "headline": "x" * 1500})),
+    ],
+)
+def test_connector_fields_execute_verify_and_roll_back_to_unset(action, key, value) -> None:
+    wordpress = FakeConnectorWordPress()
+    wp = connector(wordpress)
+    # The before-state is what the theme rendered, not the (empty) stored meta.
+    item = proposal(action_type=action, proposed_state={"value": value},
+                    before_state={"wp_type": "posts", "wp_id": "42", "value": "Rendered by theme"})
+    item.executed_state = wp.execute(item)
+    assert wordpress.meta[key] == value and item.executed_state["previous"] == ""
+    assert wp.verify(item)["verification"] == "wordpress-independent-read"
+    wp.rollback(item)
+    assert wordpress.meta[key] == ""
+
+
+def test_connector_requires_the_plugin_and_a_matching_stored_before_state() -> None:
+    item = proposal(action_type="meta_title", proposed_state={"value": "New"})
+    with pytest.raises(WordPressExecutionError, match="Connector plugin"):
+        connector(FakeConnectorWordPress(plugin_active=False)).execute(item)
+
+    stored = FakeConnectorWordPress(meta={"reckon_seo_title": "Edited by a human"})
+    with pytest.raises(TargetVersionMismatch):
+        connector(stored).execute(item)
+    assert stored.meta["reckon_seo_title"] == "Edited by a human"
+
+    matching = FakeConnectorWordPress(meta={"reckon_seo_title": "Old title"})
+    executed = connector(matching).execute(item)
+    assert executed["previous"] == "Old title" and matching.meta["reckon_seo_title"] == "New"
+
+
+def test_default_mapping_still_rejects_connector_types() -> None:
+    with pytest.raises(UnsupportedWordPressAction):
+        executor(FakeWordPress()).execute(proposal(action_type="meta_title"))

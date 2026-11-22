@@ -927,3 +927,22 @@ executor, SEO engines and the Claude plugin now exist). Remaining gaps:
 - The token form loads `GET .../plugin-tokens/scopes`, pre-checks the server defaults and
   sends the chosen tools; it cannot submit with none selected. The server still validates.
 - Validation: `tsc -b` clean, `npm test` passed (104 tests), `oxlint` clean. Not browser-tested.
+
+## Reckon SEO Connector WordPress plugin — 2026-11-22
+
+- Decision (owner): the SEO plugin is built in-house rather than depending on Yoast or
+  Rank Math. `wordpress/reckon-seo-connector/` registers four post-meta fields
+  (`reckon_seo_title`, `_description`, `_canonical`, `_schema`) for posts and pages with
+  `show_in_rest`, sanitizes on save, escapes on output, replaces core's canonical only when
+  set, encodes JSON-LD with HEX flags, and adds no route of its own.
+- `WordPressActionExecutor` gained `CONNECTOR_FIELD_MAP` (enabled by
+  `RECKON_CMS_WORDPRESS_SEO_CONNECTOR=true`): meta title/description, canonical and schema are
+  written as `{"meta": {key: value}}` and confirmed by an independent read-back. A first write
+  skips the before-state comparison (stored meta is empty; the before-state is the rendered
+  value); a later write must match the stored value. The previous stored value is kept and
+  rollback restores it, including clearing an unset field. Missing meta means the plugin is
+  inactive and fails closed with a clear message. Schema values may be up to 20,000 characters.
+- Validation: `python -m pytest tests -q` passed (337 tests; 6 new, mocked WordPress).
+- Not verified: the PHP has never been run or linted (no PHP here) and nothing was tested on a
+  real site; activate on staging in the drill. Another SEO plugin printing the same tags can
+  produce duplicates, which the public-page verifier would flag for title/H1/description.

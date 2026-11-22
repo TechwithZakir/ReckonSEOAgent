@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     cms_wordpress_username: str | None = None
     cms_wordpress_app_password: SecretStr | None = None
     cms_wordpress_execution_enabled: bool = False
+    # The site runs the Reckon SEO Connector plugin, enabling meta title/description,
+    # canonical and schema writes through the REST API.
+    cms_wordpress_seo_connector: bool = False
     # Read-only verification of externally applied changes by fetching the public page.
     cms_public_verification_enabled: bool = True
 

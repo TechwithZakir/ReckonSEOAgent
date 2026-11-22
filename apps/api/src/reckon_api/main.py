@@ -37,7 +37,7 @@ from reckon_api.crawl_worker import CeleryCrawlQueue, create_celery_app
 from pydantic import SecretStr
 from reckon_core.action_executor import FixtureActionExecutor
 from reckon_core.public_page_verifier import PublicPageVerifier
-from reckon_core.wordpress_executor import WordPressActionExecutor
+from reckon_core.wordpress_executor import CONNECTOR_FIELD_MAP, WordPressActionExecutor
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -103,6 +103,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app_settings.cms_wordpress_base_url,
             app_settings.cms_wordpress_username,
             SecretStr(app_settings.cms_wordpress_app_password.get_secret_value()),
+            field_map=(
+                CONNECTOR_FIELD_MAP if app_settings.cms_wordpress_seo_connector else None
+            ),
         )
     else:
         app.state.seo_action_executor = None
