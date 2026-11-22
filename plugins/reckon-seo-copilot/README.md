@@ -24,7 +24,17 @@ Set these in the environment that launches Claude. Never commit them.
 | --- | --- |
 | `RECKON_API_URL` | Reckon API base URL. HTTPS only; plain HTTP is accepted for localhost. |
 | `RECKON_ORGANIZATION_ID` | The one organization this plugin acts for. Not a tool argument. |
-| `RECKON_ACCESS_TOKEN` | Bearer token of a Reckon member with the Admin or Owner role. |
+| `RECKON_ACCESS_TOKEN` | A scoped plugin token (`rkpt_…`, preferred) or a member session token. The member must be Admin or Owner. |
+
+### Scoped plugin tokens
+
+An Owner or Admin issues a token with `POST /api/v1/organizations/{id}/plugin-tokens`
+(`label`, optional `scopes`, `lifetime_days` 1-90). The plaintext is shown once. A token works
+only in its own organization, only for its listed tools, and only on MCP tool routes, so it
+cannot manage tokens or call any other API. The issuing member's role still applies, and
+`DELETE .../plugin-tokens/{token_id}` revokes it at once. Default scopes exclude
+`reckon.crawl.start`; add it explicitly if the plugin should start crawls. Treat the token as
+a secret and never commit it.
 
 ## Tools
 

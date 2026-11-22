@@ -887,3 +887,20 @@ executor, SEO engines and the Claude plugin now exist). Remaining gaps:
 - The project has no ruff config; the stricter default rule set reports hundreds of style
   findings and was not applied. One harmless F841 remains (`schedule` in `delete_schedule`).
 - Validation: `pytest tests -q` passed (329).
+
+## Scoped plugin tokens and runbooks — 2026-11-22
+
+- Added `plugin_tokens` (migration `0022_plugin_tokens`), `reckon_core/plugin_tokens.py` and
+  `/api/v1/organizations/{id}/plugin-tokens` (issue, list, revoke; Owner/Admin only).
+  Tokens (`rkpt_` prefix) are stored as SHA-256 digests, shown once, capped at 90 days and
+  10 active per organization, bound to one organization and an explicit list of MCP tools,
+  and accepted only on `/api/v1/mcp/organizations/{id}/tools/{tool}/invoke`. They cannot
+  manage tokens or reach any other route. The issuer's current membership role still applies.
+  Issue and revoke are audited. The table has no RLS (looked up by digest before an
+  organization context exists, like `auth_sessions`).
+- This is a scoped token, not full OAuth: no authorization-code flow, refresh or consent
+  screen. Revisit if third parties need to connect.
+- Added `docs/OPERATIONS_RUNBOOKS.md` for egress isolation and backup/restore. They are
+  procedures only; no drill was run.
+- Validation: `pytest tests -q` passed (331 tests; 2 new). The migration was not run against
+  PostgreSQL here, and the dashboard has no token-management screen yet.

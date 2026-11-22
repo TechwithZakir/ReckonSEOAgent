@@ -139,6 +139,34 @@ class NativeSession(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class PluginToken(Base):
+    """Long-lived, revocable credential for the Claude plugin.
+
+    Bound to one organization, one issuing user (whose current role still applies) and an
+    explicit list of MCP tools. Only the SHA-256 digest is stored.
+    """
+
+    __tablename__ = "plugin_tokens"
+    __table_args__ = (Index("ix_plugin_tokens_org", "org_id", "created_at"),)
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    id: Mapped[UUID] = mapped_column(Uuid, nullable=False, unique=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column("org_id", Uuid, nullable=False)
+    user_id: Mapped[UUID] = mapped_column(
+        "usr_id", Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    label: Mapped[str] = mapped_column(String(80), nullable=False)
+    scopes: Mapped[list[str]] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class NativeAuthRateLimit(Base):
     __tablename__ = "auth_limits"
     __table_args__ = (Index("ix_auth_limits_expiry", "expires_at"),)

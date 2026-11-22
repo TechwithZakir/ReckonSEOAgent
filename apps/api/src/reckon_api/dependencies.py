@@ -11,6 +11,7 @@ from reckon_core.oidc import (
 )
 from reckon_core.native_auth import NativeAuthRepository, is_native_token
 from reckon_core.repositories import SqlAlchemyIdentityRepository
+from reckon_core.plugin_tokens import PluginTokenRepository, is_plugin_token
 from reckon_core.tenancy import AuthenticatedPrincipal
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -34,6 +35,19 @@ def get_authenticated_principal(
     session: Session = Depends(get_database_session),
 ) -> AuthenticatedPrincipal:
     if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Valid bearer authentication is required.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if is_plugin_token(credentials.credentials):
+        principal = PluginTokenRepository(session).authenticate(
+            credentials.credentials, request.url.path
+        )
+        if principal is not None:
+            session.commit()  # records last_used_at
+            return principal
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Valid bearer authentication is required.",
