@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -19,6 +19,7 @@ from reckon_api.tenant_access import resolve_organization_access
 from reckon_api.tool_metering import meter_tool_call
 from reckon_core.action_lifecycle import ActionLifecycleConflict, SeoActionLifecycle
 from reckon_core.persistence import CrawlRun, SeoActionProposal
+from reckon_core.public_page_verifier import FallbackVerifier
 from reckon_core.seo_engines import EngineName, audit_engine
 from reckon_core.permissions import OrganizationPermission, require_permission
 from reckon_core.repositories import IdempotencyConflict, SqlAlchemyCrawlRepository
@@ -329,18 +330,33 @@ def _manager_context(
     return context
 
 
+def _report_verifier(http_request: Request) -> Any:
+    """REST executor for its own types, the public page for everything else."""
+    executor = getattr(http_request.app.state, "seo_action_executor", None)
+    public = getattr(http_request.app.state, "seo_action_verifier", None)
+    if executor is not None and public is not None:
+        return FallbackVerifier(executor, public)
+    return executor or public
+
+
 @router.post(
     f"/organizations/{{organization_id}}/tools/{LIST_APPROVED_TOOL}/invoke",
     dependencies=METERED,
     response_model=list[McpExecutableAction],
 )
 def list_approved_actions_tool(
+    http_request: Request,
     organization_id: UUID,
     payload: McpApprovedActionsRequest,
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     session: Session = Depends(get_database_session),
 ) -> list[McpExecutableAction]:
     context = _manager_context(organization_id, principal, session)
+    # The plugin polls this route, so settle claims whose executor never reported.
+    if SeoActionLifecycle(session).recover_stale_claims(
+        context, _report_verifier(http_request), http_request.state.request_id
+    ):
+        session.commit()
     rows = session.scalars(
         select(SeoActionProposal)
         .where(
@@ -397,9 +413,7 @@ def report_action_tool(
     context = _manager_context(organization_id, principal, session)
     # A configured REST executor keeps verifying its own action types; otherwise Reckon reads
     # the public page, which is how changes made through the browser are confirmed.
-    verifier = getattr(http_request.app.state, "seo_action_executor", None) or getattr(
-        http_request.app.state, "seo_action_verifier", None
-    )
+    verifier = _report_verifier(http_request)
     try:
         proposal = SeoActionLifecycle(session).report_external(
             context,

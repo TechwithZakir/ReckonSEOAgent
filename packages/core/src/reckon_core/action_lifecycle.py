@@ -6,7 +6,7 @@ from typing import Literal, Protocol
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from reckon_core.persistence import AuditEvent, SeoActionProposal, Website
@@ -410,6 +410,79 @@ class SeoActionLifecycle:
         )
         self._session.flush()
         return proposal
+
+    def recover_stale_claims(
+        self,
+        context: TenantContext,
+        verifier: ActionExecutor | None,
+        request_id: UUID,
+        max_age: timedelta = timedelta(minutes=15),
+    ) -> list[SeoActionProposal]:
+        """Resolve claims whose executor never reported.
+
+        A claim older than ``max_age`` is checked against the live page through Reckon's own
+        read-back. A matching live value is recorded as verified; anything else fails closed
+        with ``external_claim_timeout`` so the action can be re-proposed or rolled back.
+        """
+        self._scope(context.organization_id)
+        require_permission(context.role, OrganizationPermission.MEMBER_MANAGE)
+        cutoff = datetime.now(timezone.utc) - max_age
+        candidates = self._session.scalars(
+            select(SeoActionProposal)
+            .where(
+                SeoActionProposal.organization_id == context.organization_id,
+                SeoActionProposal.status == "executing",
+            )
+            .with_for_update()
+        ).all()
+        recovered: list[SeoActionProposal] = []
+        for proposal in candidates:
+            claimed_at = self._session.scalar(
+                select(func.max(AuditEvent.created_at)).where(
+                    AuditEvent.organization_id == context.organization_id,
+                    AuditEvent.resource_id == proposal.id,
+                    AuditEvent.action == "seo_action.claimed",
+                )
+            )
+            if claimed_at is None:
+                continue
+            if claimed_at.tzinfo is None:
+                claimed_at = claimed_at.replace(tzinfo=timezone.utc)
+            if claimed_at > cutoff:
+                continue
+            value = proposal.proposed_state.get("value")
+            if verifier is not None and value is not None:
+                proposal.executed_state = {"value": value, "execution": "recovered-by-readback"}
+                try:
+                    proposal.verification_state = verifier.verify(proposal)
+                    proposal.status = "verified"
+                    proposal.executed_at = proposal.verified_at = datetime.now(timezone.utc)
+                except Exception:
+                    proposal.executed_state = None
+                    proposal.verification_state = None
+                    proposal.status = "failed"
+                    proposal.error_code = "external_claim_timeout"
+            else:
+                proposal.status = "failed"
+                proposal.error_code = "external_claim_timeout"
+            self._session.add(
+                AuditEvent(
+                    organization_id=context.organization_id,
+                    actor_user_id=context.principal.user_id,
+                    action=f"seo_action.{proposal.status}",
+                    resource_type="seo_action",
+                    resource_id=proposal.id,
+                    request_id=request_id,
+                    details={
+                        "target_version": proposal.target_version,
+                        "status": proposal.status,
+                        "channel": "recovery",
+                    },
+                )
+            )
+            recovered.append(proposal)
+        self._session.flush()
+        return recovered
 
     def execute(
         self,

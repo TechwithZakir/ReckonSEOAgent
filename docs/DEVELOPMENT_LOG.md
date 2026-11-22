@@ -851,3 +851,21 @@ executor, SEO engines and the Claude plugin now exist). Remaining gaps:
   Vitest 5.1.1 / Node 24 without the CLI flag.
 - Validation: `npm test` passed (97 tests); Python `pytest tests -q` passed (324 tests);
   `tsc -b` clean.
+
+## Action lifecycle hardening — 2026-11-22
+
+- Stale claims: `SeoActionLifecycle.recover_stale_claims` settles `executing` proposals whose
+  claim (audit event time) is older than 15 minutes. It reads the live page through the
+  verifier; a match is `verified` with `execution: recovered-by-readback`, anything else
+  fails closed as `external_claim_timeout`. The plugin's approved-actions poll triggers it.
+- Cache delay: `PublicPageVerifier` retries a mismatch twice (2 s, 5 s) only when the
+  executor's reported value equals the approved one; unsupported types and disagreeing
+  reports are never retried.
+- Title templates: a live `<title>` of `<approved text> <separator> <site name>` verifies;
+  text before the approved value, or no separator, does not.
+- Non-REST types: a configured REST executor used to fail every type it has no field mapping
+  for. `FallbackVerifier` now sends those (meta title/description, canonical, schema) to the
+  public-page read-back. REST write support for them still needs an SEO-plugin field mapping
+  and was not added; they are applied through the Chrome path.
+- Validation: `python -m pytest tests -q` passed (329 tests; 5 new). No real site, browser or
+  restart; the running API still needs an approved restart.

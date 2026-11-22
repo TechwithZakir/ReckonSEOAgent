@@ -42,7 +42,12 @@ def proposal(action_type: str, value: str, reported: str | None = None):
 
 def verifier(html: str, resolver=None, **kwargs):
     transport = Transport(html, **kwargs)
-    return PublicPageVerifier(resolver or PublicResolver(), transport), transport
+    return (
+        PublicPageVerifier(
+            resolver or PublicResolver(), transport, sleep=lambda _: None, retry_delays=()
+        ),
+        transport,
+    )
 
 
 def test_verifies_title_description_canonical_and_h1() -> None:
@@ -118,3 +123,42 @@ def test_cross_host_redirect_is_rejected_and_writes_are_unsupported() -> None:
         v.execute(proposal("meta_title", "Wanted"))
     with pytest.raises(UnsupportedVerification):
         v.rollback(proposal("meta_title", "Wanted"))
+
+
+def test_title_template_suffix_is_accepted_only_after_the_approved_text() -> None:
+    v, _ = verifier("<title>New title | Example Site</title>")
+    assert v.verify(proposal("meta_title", "New title"))["value"] == "New title | Example Site"
+    for live in ("Other New title | Example Site", "New titleXYZ", "New title"[:-1]):
+        v, _ = verifier(f"<title>{live}</title>")
+        with pytest.raises(PublicVerificationFailed):
+            v.verify(proposal("meta_title", "New title"))
+
+
+class SequenceTransport:
+    def __init__(self, pages: list[str]):
+        self.pages, self.calls = pages, 0
+
+    def get(self, url, host, address, timeout_seconds, max_body_bytes):
+        page = self.pages[min(self.calls, len(self.pages) - 1)]
+        self.calls += 1
+        return HttpFetchResponse(200, {}, page.encode())
+
+
+def test_stale_cache_is_retried_then_verifies() -> None:
+    delays: list[float] = []
+    transport = SequenceTransport(["<title>Old</title>", "<title>New title</title>"])
+    v = PublicPageVerifier(PublicResolver(), transport, sleep=delays.append, retry_delays=(2.0, 5.0))
+    assert v.verify(proposal("meta_title", "New title"))["value"] == "New title"
+    assert delays == [2.0] and transport.calls == 2
+
+
+def test_persistent_mismatch_stops_after_bounded_retries_and_disagreement_is_not_retried() -> None:
+    delays: list[float] = []
+    transport = SequenceTransport(["<title>Old</title>"])
+    v = PublicPageVerifier(PublicResolver(), transport, sleep=delays.append, retry_delays=(2.0, 5.0))
+    with pytest.raises(PublicVerificationFailed):
+        v.verify(proposal("meta_title", "New title"))
+    assert delays == [2.0, 5.0] and transport.calls == 3
+    with pytest.raises(PublicVerificationFailed):
+        v.verify(proposal("meta_title", "New title", reported="Different"))
+    assert transport.calls == 3

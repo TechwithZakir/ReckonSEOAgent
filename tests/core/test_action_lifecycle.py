@@ -266,3 +266,81 @@ def test_proposer_cannot_approve_own_medium_risk_action(
         session.commit()
         with pytest.raises(ActionLifecycleConflict, match="different authorized member"):
             lifecycle.approve(context, proposal.id, proposal.approval_hash, uuid4())
+
+
+class _Verifier:
+    def __init__(self, ok: bool) -> None:
+        self.ok = ok
+
+    def verify(self, proposal):
+        if not self.ok:
+            raise RuntimeError("live page differs")
+        return {"value": proposal.proposed_state["value"], "verification": "stub-readback"}
+
+
+def _claimed(lifecycle, session, context, website_id, key: str, age_minutes: int):
+    from datetime import datetime, timedelta, timezone
+
+    proposal = lifecycle.propose(
+        context, website_id, "meta_title", "https://example.com/p", "v1",
+        {"value": "Old"}, {"value": "New"}, "low", "Better title", key, uuid4(),
+    )
+    lifecycle.approve(context, proposal.id, proposal.approval_hash, uuid4())
+    lifecycle.claim_external(context, proposal.id, uuid4())
+    event = session.scalar(
+        select(AuditEvent).where(
+            AuditEvent.resource_id == proposal.id, AuditEvent.action == "seo_action.claimed"
+        )
+    )
+    event.created_at = datetime.now(timezone.utc) - timedelta(minutes=age_minutes)
+    session.flush()
+    return proposal
+
+
+def test_stale_claims_are_verified_by_read_back_or_fail_closed(
+    action_workspace: tuple[sessionmaker[Session], TenantContext, UUID],
+) -> None:
+    factory, context, website_id = action_workspace
+    with factory() as session:
+        lifecycle = SeoActionLifecycle(session)
+        fresh = _claimed(lifecycle, session, context, website_id, "stale-fresh-001", 1)
+        applied = _claimed(lifecycle, session, context, website_id, "stale-applied-001", 60)
+        missed = _claimed(lifecycle, session, context, website_id, "stale-missed-001", 60)
+
+        assert lifecycle.recover_stale_claims(context, None, uuid4()) != []
+        assert (fresh.status, applied.status, missed.status) == ("executing", "failed", "failed")
+
+    with factory() as session:
+        lifecycle = SeoActionLifecycle(session)
+        applied = _claimed(lifecycle, session, context, website_id, "stale-applied-002", 60)
+        assert lifecycle.recover_stale_claims(context, _Verifier(True), uuid4()) == [applied]
+        assert applied.status == "verified"
+        assert applied.executed_state["execution"] == "recovered-by-readback"
+
+        missed = _claimed(lifecycle, session, context, website_id, "stale-missed-002", 60)
+        lifecycle.recover_stale_claims(context, _Verifier(False), uuid4())
+        assert missed.status == "failed"
+        assert missed.error_code == "external_claim_timeout"
+        assert missed.executed_state is None
+        assert lifecycle.recover_stale_claims(context, _Verifier(True), uuid4()) == []
+
+
+def test_fallback_verifier_uses_public_page_only_for_unsupported_rest_types() -> None:
+    from types import SimpleNamespace
+
+    from reckon_core.public_page_verifier import FallbackVerifier
+    from reckon_core.wordpress_executor import UnsupportedWordPressAction
+
+    class Rest:
+        def verify(self, proposal):
+            if proposal.action_type != "heading":
+                raise UnsupportedWordPressAction("no mapping")
+            return {"verification": "rest"}
+
+    class Public:
+        def verify(self, proposal):
+            return {"verification": "public"}
+
+    verifier = FallbackVerifier(Rest(), Public())
+    assert verifier.verify(SimpleNamespace(action_type="heading"))["verification"] == "rest"
+    assert verifier.verify(SimpleNamespace(action_type="meta_title"))["verification"] == "public"

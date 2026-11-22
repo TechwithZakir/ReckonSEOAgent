@@ -8,6 +8,9 @@ parsed and compared, never interpreted.
 """
 
 import json
+import re
+import time
+from collections.abc import Callable
 from html.parser import HTMLParser
 from time import monotonic
 from urllib.parse import urljoin, urlsplit
@@ -27,6 +30,13 @@ VERIFIABLE_ACTION_TYPES = frozenset(
 _MAX_BODY_BYTES = 1024 * 1024
 _MAX_RUN_SECONDS = 15.0
 _MAX_JSON_LD_BLOCKS = 20
+
+
+# A page cache can serve the old HTML briefly after an edit. Retry a bounded number of times
+# (total wait stays inside one request) before reporting a mismatch.
+_RETRY_DELAYS_SECONDS = (2.0, 5.0)
+# A theme may append " | Site name" to <title>; accepted only after the approved text.
+_TITLE_SUFFIX = re.compile(r"^\s*[-\u2013\u2014|\u00b7:\u2022]\s*\S.{0,80}$")
 
 
 class PublicVerificationError(RuntimeError):
@@ -101,6 +111,22 @@ class _LivePageParser(HTMLParser):
             self._json_parts.append(data)
 
 
+class FallbackVerifier:
+    """Verify with the REST executor, or the public page for types it does not support."""
+
+    def __init__(self, primary: object, fallback: "PublicPageVerifier") -> None:
+        self._primary = primary
+        self._fallback = fallback
+
+    def verify(self, proposal: SeoActionProposal) -> dict[str, str]:
+        from reckon_core.wordpress_executor import UnsupportedWordPressAction
+
+        try:
+            return self._primary.verify(proposal)  # type: ignore[attr-defined]
+        except UnsupportedWordPressAction:
+            return self._fallback.verify(proposal)
+
+
 class PublicPageVerifier:
     """Read-only verifier satisfying the verify part of the action executor contract."""
 
@@ -110,7 +136,11 @@ class PublicPageVerifier:
         self,
         resolver: DnsAddressLookup | None = None,
         transport: PinnedHttpTransport | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+        retry_delays: tuple[float, ...] = _RETRY_DELAYS_SECONDS,
     ) -> None:
+        self._sleep = sleep
+        self._retry_delays = retry_delays
         self._resolver = resolver or PublicDnsAddressResolver(timeout_seconds=1.0)
         self._transport = transport or StdlibPinnedHttpTransport()
 
@@ -121,6 +151,24 @@ class PublicPageVerifier:
         raise UnsupportedVerification("The public page verifier never writes.")
 
     def verify(self, proposal: SeoActionProposal) -> dict[str, str]:
+        attempt = 0
+        while True:
+            try:
+                return self._verify_once(proposal)
+            except PublicVerificationFailed:
+                if attempt >= len(self._retry_delays) or not self._retryable(proposal):
+                    raise
+                self._sleep(self._retry_delays[attempt])
+                attempt += 1
+
+    @staticmethod
+    def _retryable(proposal: SeoActionProposal) -> bool:
+        # Only a cache-style mismatch is worth retrying, not a disagreeing executor report.
+        expected = proposal.proposed_state.get("value")
+        reported = (proposal.executed_state or {}).get("value")
+        return isinstance(expected, str) and bool(expected.strip()) and reported == expected
+
+    def _verify_once(self, proposal: SeoActionProposal) -> dict[str, str]:
         if proposal.action_type not in VERIFIABLE_ACTION_TYPES:
             raise UnsupportedVerification(
                 f"{proposal.action_type} cannot be verified from the public page."
@@ -166,7 +214,9 @@ class PublicPageVerifier:
         want = _collapse(expected)
         if action_type == "meta_title":
             live = _collapse("".join(page.title_parts))
-            if live != want:
+            if live != want and not (
+                live.startswith(want) and _TITLE_SUFFIX.match(live[len(want):])
+            ):
                 raise PublicVerificationFailed("The live <title> does not match the approved value.")
             return live
         if action_type == "meta_description":
