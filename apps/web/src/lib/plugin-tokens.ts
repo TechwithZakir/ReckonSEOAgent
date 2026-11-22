@@ -69,6 +69,26 @@ export async function listPluginTokens(
   return value
 }
 
+export type PluginScopes = { allowed: string[]; default: string[] }
+
+export async function listPluginScopes(
+  token: string,
+  organizationId: string,
+  fetcher: typeof fetch = fetch,
+): Promise<PluginScopes> {
+  const response = await fetcher(`${endpoint(organizationId)}/scopes`, {
+    headers: { Authorization: `Bearer ${token}` },
+    cache: 'no-store',
+  })
+  const value = (await read(response, 'Loading plugin scopes')) as Partial<PluginScopes> | null
+  const strings = (list: unknown): list is string[] =>
+    Array.isArray(list) && list.every((item) => typeof item === 'string')
+  if (!value || !strings(value.allowed) || !strings(value.default)) {
+    throw new Error('The API returned invalid plugin scopes.')
+  }
+  return { allowed: value.allowed, default: value.default }
+}
+
 export async function issuePluginToken(
   token: string,
   organizationId: string,

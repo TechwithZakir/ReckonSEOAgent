@@ -921,3 +921,9 @@ executor, SEO engines and the Claude plugin now exist). Remaining gaps:
 - Not done: REST writes for SEO-plugin fields (needs the plugin name and a live site to
   verify), a real browser refresh test (needs a signed-in session), and the egress and
   backup drills (infrastructure; see `docs/OPERATIONS_RUNBOOKS.md`).
+
+## Plugin token scope picker — 2026-11-22
+
+- The token form loads `GET .../plugin-tokens/scopes`, pre-checks the server defaults and
+  sends the chosen tools; it cannot submit with none selected. The server still validates.
+- Validation: `tsc -b` clean, `npm test` passed (104 tests), `oxlint` clean. Not browser-tested.

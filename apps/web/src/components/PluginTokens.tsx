@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { issuePluginToken, listPluginTokens, revokePluginToken, tokenState } from '../lib/plugin-tokens'
-import type { PluginToken } from '../lib/plugin-tokens'
+import { issuePluginToken, listPluginScopes, listPluginTokens, revokePluginToken, tokenState } from '../lib/plugin-tokens'
+import type { PluginScopes, PluginToken } from '../lib/plugin-tokens'
 import type { OrganizationContext } from '../lib/organizations'
 
 export function PluginTokens({
@@ -15,6 +15,8 @@ export function PluginTokens({
   const [tokens, setTokens] = useState<PluginToken[]>([])
   const [label, setLabel] = useState('')
   const [days, setDays] = useState(30)
+  const [catalogue, setCatalogue] = useState<PluginScopes | null>(null)
+  const [chosen, setChosen] = useState<string[]>([])
   const [issued, setIssued] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -22,6 +24,13 @@ export function PluginTokens({
   useEffect(() => {
     if (!manager) return undefined
     let active = true
+    void listPluginScopes(accessToken, organization.organization_id)
+      .then((scopes) => {
+        if (!active) return
+        setCatalogue(scopes)
+        setChosen(scopes.default)
+      })
+      .catch(() => undefined)
     void listPluginTokens(accessToken, organization.organization_id)
       .then((rows) => { if (active) setTokens(rows) })
       .catch((cause: unknown) => {
@@ -40,6 +49,7 @@ export function PluginTokens({
       const created = await issuePluginToken(accessToken, organization.organization_id, {
         label,
         lifetime_days: days,
+        ...(catalogue ? { scopes: chosen } : {}),
       })
       setIssued(created.token)
       setLabel('')
@@ -87,7 +97,27 @@ export function PluginTokens({
           <input id="plugin-token-label" required maxLength={80} value={label} disabled={busy} onChange={(event) => setLabel(event.target.value)} />
           <label htmlFor="plugin-token-days">Lifetime (days, 1-90)</label>
           <input id="plugin-token-days" type="number" min={1} max={90} required value={days} disabled={busy} onChange={(event) => setDays(Number(event.target.value))} />
-          <button className="button button--primary" type="submit" disabled={busy}>Create token</button>
+          {catalogue && (
+            <fieldset>
+              <legend>Tools this token may call</legend>
+              {catalogue.allowed.map((scope) => (
+                <label key={scope}>
+                  <input
+                    type="checkbox"
+                    checked={chosen.includes(scope)}
+                    disabled={busy}
+                    onChange={(event) =>
+                      setChosen((current) =>
+                        event.target.checked ? [...current, scope] : current.filter((item) => item !== scope),
+                      )
+                    }
+                  />
+                  {scope}
+                </label>
+              ))}
+            </fieldset>
+          )}
+          <button className="button button--primary" type="submit" disabled={busy || (catalogue !== null && chosen.length === 0)}>Create token</button>
         </form>
         {tokens.length === 0 && <p>No plugin tokens have been created.</p>}
         {tokens.map((row) => {

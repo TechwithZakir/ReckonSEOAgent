@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { issuePluginToken, listPluginTokens, revokePluginToken, tokenState } from './plugin-tokens'
+import { issuePluginToken, listPluginScopes, listPluginTokens, revokePluginToken, tokenState } from './plugin-tokens'
 
 const ORG = '11111111-1111-4111-8111-111111111111'
 const ROW = {
@@ -36,6 +36,13 @@ describe('plugin tokens client', () => {
       issuePluginToken('t', ORG, { label: 'a', lifetime_days: 30 }, reply({ ...ROW, token: 'bad' }, 201)),
     ).rejects.toThrow('invalid')
     await expect(listPluginTokens('t', ORG, reply({}, 403))).rejects.toThrow('owners and admins')
+  })
+
+  it('loads and validates the scope catalogue', async () => {
+    const ok = reply({ allowed: ['a', 'b'], default: ['a'] })
+    expect(await listPluginScopes('t', ORG, ok)).toEqual({ allowed: ['a', 'b'], default: ['a'] })
+    expect(ok.mock.calls[0][0]).toContain('/plugin-tokens/scopes')
+    await expect(listPluginScopes('t', ORG, reply({ allowed: 'a', default: [] }))).rejects.toThrow('invalid')
   })
 
   it('classifies token state', () => {
