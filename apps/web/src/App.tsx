@@ -4,6 +4,8 @@ import { useAuth } from './auth/AuthContext'
 import { CrawlWorkflow } from './components/CrawlWorkflow'
 import { AIModelSettings } from './components/AIModelSettings'
 import { LoginPage } from './components/LoginPage'
+import { PublicAuditTool } from './components/PublicAuditTool'
+import { PublicLanding } from './components/PublicLanding'
 import { InvitationsPage } from './components/InvitationsPage'
 import { PlatformAccess } from './components/PlatformAccess'
 import { PlatformOperations } from './components/PlatformOperations'
@@ -28,6 +30,7 @@ type IconName =
   | 'chevron'
   | 'globe'
   | 'grid'
+  | 'menu'
   | 'moon'
   | 'spark'
   | 'sun'
@@ -79,6 +82,7 @@ function Icon({
         <rect x="3" y="14" width="7" height="7" rx="1.5" />
       </>
     ),
+    menu: <path d="M4 6h16M4 12h16M4 18h16" />,
     moon: <path d="M20.9 13A9 9 0 0 1 11 3.1 9 9 0 1 0 20.9 13Z" />,
     spark: (
       <>
@@ -125,39 +129,45 @@ type NavigationItem = {
 
 const navigationGroups: { label: string; items: NavigationItem[] }[] = [
   {
-    label: 'Workspace',
+    label: 'Start',
     items: [
       { label: 'Overview', icon: 'grid', available: true },
+      { label: 'Quick audit', icon: 'audit', available: true },
       { label: 'Websites', icon: 'globe', available: true },
-      { label: 'Site Bot', icon: 'activity', available: true },
-      { label: 'Technical audits', icon: 'audit', available: true },
-      { label: 'Keywords', icon: 'spark', available: true },
-      { label: 'Content Studio', icon: 'book', available: true },
-      { label: 'LinkPilot', icon: 'arrow', available: true },
-      { label: 'Local SEO', icon: 'globe', available: true },
-      { label: 'E-Commerce', icon: 'grid', available: true },
-      { label: 'Enterprise', icon: 'users', available: true },
-      { label: 'Media & Query', icon: 'audit', available: true },
-      { label: 'Emerging / GEO', icon: 'spark', available: true },
-      { label: 'System settings', icon: 'spark', available: true },
-      { label: 'Account security', icon: 'users', available: true },
     ],
   },
   {
-    label: 'Intelligence',
+    label: 'Audit & optimize',
     items: [
+      { label: 'Technical audits', icon: 'audit', available: true },
+      { label: 'Site Bot', icon: 'activity', available: true },
       { label: 'Recommendations', icon: 'spark', available: true },
+      { label: 'Keywords', icon: 'spark', available: true },
+      { label: 'Content Studio', icon: 'book', available: true },
+      { label: 'E-Commerce', icon: 'grid', available: true },
+      { label: 'Media & Query', icon: 'audit', available: true },
+      { label: 'Emerging / GEO', icon: 'spark', available: true },
+      { label: 'LinkPilot', icon: 'arrow', available: true },
+      { label: 'Local SEO', icon: 'globe', available: true },
+      { label: 'Enterprise', icon: 'users', available: true },
+    ],
+  },
+  {
+    label: 'Automation',
+    items: [
+      { label: 'Approvals', icon: 'check', available: true },
       { label: 'Agent activity', icon: 'activity', available: true },
       { label: 'Ask SEO Copilot', icon: 'spark', available: true },
       { label: 'Reports', icon: 'book', available: true },
     ],
   },
   {
-    label: 'Governance',
+    label: 'Workspace',
     items: [
-      { label: 'Approvals', icon: 'check', available: true },
       { label: 'Agency Workspace', icon: 'users', available: true },
       { label: 'Integrations', icon: 'grid', available: true },
+      { label: 'System settings', icon: 'spark', available: true },
+      { label: 'Account security', icon: 'users', available: true },
     ],
   },
   {
@@ -225,6 +235,13 @@ function App() {
     setPath(window.location.pathname)
     window.scrollTo(0, 0)
   }, [])
+  const auth = useAuth()
+  const signedIn = auth.status === 'signed-in'
+  if (path === '/audit') return <PublicLanding onNavigate={navigate} signedIn={signedIn} />
+  if (path === '/' && auth.status === 'initializing') {
+    return <div className="app-loading" role="status">Loading…</div>
+  }
+  if (path === '/' && !signedIn) return <PublicLanding onNavigate={navigate} signedIn={false} />
   if (path === '/login' || path === '/auth/verify' || path === '/auth/reset') return <LoginPage onNavigate={navigate} />
   if (path === '/invitations') return <InvitationsPage onNavigate={navigate} />
   return <Dashboard onNavigate={navigate} />
@@ -246,6 +263,13 @@ function Dashboard({ onNavigate }: { onNavigate: (path: string) => void }) {
       // preference storage is optional
     }
   }, [theme])
+  const [menuOpen, setMenuOpen] = useState(false)
+  useEffect(() => {
+    if (!menuOpen) return
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') setMenuOpen(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [menuOpen])
   const [health, setHealth] = useState<PlatformHealth>(initialHealth)
   const [checkedAt, setCheckedAt] = useState<Date | null>(null)
   const [refreshing, setRefreshing] = useState(false)
@@ -397,7 +421,7 @@ function Dashboard({ onNavigate }: { onNavigate: (path: string) => void }) {
 
   return (
     <div className="app-shell" data-theme={theme}>
-      <aside className="sidebar">
+      <aside className={`sidebar${menuOpen ? ' sidebar--open' : ''}`} id="app-sidebar">
         <a aria-label="Reckon SEO Autopilot home" className="brand" href="/">
           <span className="brand__mark">
             <Icon name="spark" />
@@ -453,6 +477,7 @@ function Dashboard({ onNavigate }: { onNavigate: (path: string) => void }) {
                       : `${item.label} is not available in this build`
                   }
                   onClick={() => {
+                    setMenuOpen(false)
                     if (item.label === 'Websites') handleWebsiteNavigation()
                     else if (item.label === 'Overview') handleOverviewNavigation()
                     else if (item.label === 'System settings') handleSettingsNavigation()
@@ -494,10 +519,15 @@ function Dashboard({ onNavigate }: { onNavigate: (path: string) => void }) {
         </div>
       </aside>
 
+      {menuOpen && <div className="sidebar-scrim" aria-hidden="true" onClick={() => setMenuOpen(false)} />}
       <div className="main-panel">
         <header className="topbar">
+          <button aria-controls="app-sidebar" aria-expanded={menuOpen} aria-label="Open navigation menu"
+            className="icon-button topbar__menu" onClick={() => setMenuOpen((open) => !open)} type="button">
+            <Icon name="menu" />
+          </button>
           <div className="breadcrumbs">
-            <span>Workspace</span>
+            <span>{navigationGroups.find((group) => group.items.some((item) => item.label === activeNavigation))?.label ?? 'Workspace'}</span>
             <Icon name="chevron" />
             <strong>{activeNavigation}</strong>
           </div>
@@ -535,7 +565,17 @@ function Dashboard({ onNavigate }: { onNavigate: (path: string) => void }) {
 
         <main className="page-content">
           {activeNavigation !== 'Overview' ? (
-            activeNavigation === 'Platform operations' && platformAdmin ? (
+            activeNavigation === 'Quick audit' ? (
+              <section aria-labelledby="quick-audit-title" className="quick-audit">
+                <p className="section-kicker">QUICK AUDIT</p>
+                <h1 id="quick-audit-title">Audit any public website</h1>
+                <p className="quick-audit__lead">
+                  Check technical and on-page SEO for any site, yours or a competitor&apos;s. Results are
+                  not saved; add a site under Websites for monitoring and fixes.
+                </p>
+                <PublicAuditTool compact />
+              </section>
+            ) : activeNavigation === 'Platform operations' && platformAdmin ? (
               <PlatformOperations accessToken={auth.user?.access_token ?? ''} />
             ) : (
             <WorkspacePages

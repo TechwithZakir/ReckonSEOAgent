@@ -955,3 +955,41 @@ executor, SEO engines and the Claude plugin now exist). Remaining gaps:
 - Added `.github/workflows/ci.yml`: pyflakes + pytest, web `tsc`/oxlint/Vitest, and
   `php -l` on `wordpress/` with PHP 7.4. This is the first time the plugin's PHP is syntax
   checked; it has not run yet. Removed the last unused variable so the pyflakes gate is clean.
+
+## Mid-session revocation sign-out — 2026-11-24
+
+- `AuthProvider` re-checks a native session against `GET /api/v1/auth/sessions` every 60 s and
+  on window focus; a 401 clears the stored session and shows "Your session was ended".
+  Network errors and other statuses are ignored (no spurious sign-out).
+- Validation: `tsc -b` clean, `npm test` passed (104), `ruff --select F` clean, `pytest tests -q`
+  passed (337; use the system Python, `.venv` lacks celery). Not browser-tested; no new
+  component test (the interval/focus path is untested).
+- Outbound WordPress calls: each is already bounded by the metered `/seo-actions` or MCP route
+  that triggers it (one tool call per action), so no separate meter was added.
+
+## Public free SEO audit and navigation overhaul — 2026-11-24
+
+- New unauthenticated `POST /api/v1/public/audit` (`routers/public_audit.py`,
+  `reckon_core/public_audit.py`). Takes a bare domain or http(s) URL; rejects IPs, localhost,
+  non-standard ports, credentials and internal TLDs; crawls with the existing pinned-DNS,
+  robots-respecting `HomepageCrawler.crawl_pages` (max 5 pages, https then http fallback).
+  Findings reuse `audit_homepage` plus page-level checks and title/description length;
+  each has what we found, why it matters and how to fix it. The 0–100 score is
+  `100 - penalties` for the issues found (high 15, medium 7, low 3) and is labelled as not a
+  ranking prediction. Nothing is stored (no tenant, no database).
+- Abuse controls: per-client-address sliding window (`RECKON_PUBLIC_AUDIT_HOURLY_LIMIT`,
+  default 5), 10-minute per-host result cache, 3 concurrent audits (busy returns 503),
+  `Cache-Control: no-store`, switch `RECKON_PUBLIC_AUDIT_ENABLED`. State is in-process: use a
+  shared limiter if you run more than one API process, and make sure a reverse proxy
+  preserves the client address the server sees (otherwise every visitor shares one bucket).
+- Web: public landing page at `/` for signed-out visitors and `/audit` (hero URL box, report
+  with score ring, checks, expandable findings, print/save as PDF, sign-up call to action);
+  signed-in users still land on the dashboard and get a "Quick audit" page.
+- Navigation: sidebar regrouped (Start, Audit & optimize, Automation, Workspace, Platform);
+  breadcrumb shows the real group. Fixed a bug where, below 820px wide, every group except
+  the first was hidden; the sidebar is now a drawer with a menu button, scrim and Escape.
+- Validation: `pytest tests -q` 364 passed (27 new), `ruff --select F` clean, `tsc -b` clean,
+  `npm test` 119 passed (15 new), `vite build` ok. Live check of the endpoint against
+  example.com returned a real report; private targets returned 422 without fetching.
+- Not verified: the pages were never viewed in a browser (no browser here); mobile drawer and
+  print layout are untested visually.

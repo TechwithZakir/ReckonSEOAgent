@@ -69,6 +69,7 @@ see [LICENSE](./LICENSE). The package metadata uses `LicenseRef-Proprietary`.
 - [x] Parse bounded robots.txt sitemap XML and persist URL/index counts as evidence.
 - [x] Run the read-only technical audit prioritizer through a tenant-bound gateway with typed output and unknown-outcome reconciliation.
 - [x] Expand homepage checks with H2 structure, same-host links and image alt-text evidence.
+- [x] Add a free, unauthenticated, rate-limited public website SEO audit with a landing page.
 
 The liveness endpoint confirms only that the API process responds. The readiness endpoint
 checks the configured database. Authenticated organization access requires database

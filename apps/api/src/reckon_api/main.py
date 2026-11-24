@@ -28,6 +28,7 @@ from reckon_api.routers.organization_management import router as organization_ma
 from reckon_api.routers.mcp import router as mcp_router
 from reckon_api.routers.cms import router as cms_router
 from reckon_api.routers.plugin_tokens import router as plugin_tokens_router
+from reckon_api.routers.public_audit import PublicAuditGuard, router as public_audit_router
 from reckon_api.routers.seo_actions import router as seo_actions_router
 from reckon_api.routers.websites import router as websites_router
 from reckon_core.crawler import HomepageCrawler
@@ -84,6 +85,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.crawl_queue = (
         CeleryCrawlQueue(create_celery_app(app_settings))
         if app_settings.crawl_worker_enabled
+        else None
+    )
+    app.state.public_audit_guard = (
+        PublicAuditGuard(app_settings.public_audit_hourly_limit)
+        if app_settings.public_audit_enabled
         else None
     )
     app.state.model_test_slots = asyncio.Semaphore(2)
@@ -187,6 +193,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(cms_router)
     app.include_router(seo_actions_router)
     app.include_router(plugin_tokens_router)
+    app.include_router(public_audit_router)
     return app
 
 

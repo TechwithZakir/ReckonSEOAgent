@@ -170,6 +170,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => window.clearTimeout(timer)
   }, [nativeSession, manager])
 
+  useEffect(() => {
+    // Detect server-side revocation (for example "sign out other sessions") without waiting
+    // for the absolute expiry. Only a 401 signs the user out; network errors are ignored.
+    if (!nativeSession) return
+    const token = nativeSession.access_token
+    let active = true
+    const check = () => {
+      void listNativeSessions(token).catch((cause: unknown) => {
+        if (active && cause instanceof NativeAuthError && cause.status === 401) {
+          clearNativeSession(window.sessionStorage)
+          setNativeSession(null)
+          setStatus(manager ? 'signed-out' : 'unconfigured')
+          setError('Your session was ended. Please sign in again.')
+        }
+      })
+    }
+    const interval = window.setInterval(check, 60_000)
+    window.addEventListener('focus', check)
+    return () => {
+      active = false
+      window.clearInterval(interval)
+      window.removeEventListener('focus', check)
+    }
+  }, [nativeSession, manager])
+
   const signOut = useCallback(async () => {
     if (nativeSession) {
       setError(null)

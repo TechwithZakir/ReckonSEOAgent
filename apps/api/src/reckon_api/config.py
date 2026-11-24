@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     oidc_audience: str | None = None
     oidc_jwks_url: str | None = None
     crawl_daily_limit: int = Field(default=10, ge=1)
+    # Free, unauthenticated website audit (rate-limited per client address).
+    public_audit_enabled: bool = True
+    public_audit_hourly_limit: int = Field(default=5, ge=1, le=1000)
     mcp_daily_tool_call_limit: int = Field(default=500, ge=1)
     crawl_history_retention_days: int = Field(default=365, ge=30, le=3650)
     crawl_worker_enabled: bool = False
