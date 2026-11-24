@@ -1,6 +1,7 @@
 import http.client
 import ipaddress
 import io
+import json
 import socket
 import ssl
 import xml.etree.ElementTree as ET
@@ -145,6 +146,26 @@ class SitemapEvidence:
 
 
 @dataclass(frozen=True, slots=True)
+class PageSignals:
+    """Bounded, deterministic page facts used by advanced audits and fix drafting.
+
+    ``h1_text`` and ``excerpt`` are untrusted page text and must only ever be handed to a
+    model as quoted data.
+    """
+
+    lang: str | None = None
+    has_viewport: bool = False
+    og_title: bool = False
+    og_description: bool = False
+    og_image: bool = False
+    twitter_card: bool = False
+    jsonld_types: tuple[str, ...] = ()
+    word_count: int = 0
+    h1_text: str | None = None
+    excerpt: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class PageEvidence:
     url: str
     status: PageFetchStatus
@@ -158,6 +179,7 @@ class PageEvidence:
     internal_link_count: int | None = None
     image_count: int | None = None
     missing_alt_text_count: int | None = None
+    signals: PageSignals | None = None
 
 
 class PinnedHttpTransport(Protocol):
@@ -198,6 +220,8 @@ class CrawlResult:
     sitemap_evidence: tuple[SitemapEvidence, ...] | None = None
     internal_urls: tuple[str, ...] = ()
     page_evidence: tuple[PageEvidence, ...] = ()
+    homepage_signals: PageSignals | None = None
+    robots_txt: str | None = None
 
 
 class _PinnedHTTPConnection(http.client.HTTPConnection):
@@ -353,6 +377,40 @@ class _PageMetadata:
     robots_noindex: bool | None
     canonical_url: str | None
     canonical_link_count: int
+    signals: PageSignals
+
+
+_SKIPPED_TEXT_TAGS = frozenset({"script", "style", "noscript", "template"})
+_MAX_JSONLD_BLOCK = 20_000
+_MAX_JSONLD_BLOCKS = 10
+_MAX_EXCERPT = 400
+_MAX_H1_TEXT = 160
+_MAX_ROBOTS_TXT = 20_000
+
+
+def _jsonld_types(blocks: list[str]) -> tuple[str, ...]:
+    found: list[str] = []
+
+    def walk(node: object, depth: int) -> None:
+        if depth > 4 or len(found) >= 50:
+            return
+        if isinstance(node, list):
+            for item in node[:50]:
+                walk(item, depth + 1)
+        elif isinstance(node, dict):
+            kind = node.get("@type")
+            for value in (kind if isinstance(kind, list) else [kind]):
+                if isinstance(value, str) and value[:80] not in found:
+                    found.append(value[:80])
+            if "@graph" in node:
+                walk(node["@graph"], depth + 1)
+
+    for block in blocks[:_MAX_JSONLD_BLOCKS]:
+        try:
+            walk(json.loads(block), 0)
+        except (ValueError, RecursionError):
+            continue
+    return tuple(found)
 
 
 class _PageMetadataParser(HTMLParser):
@@ -373,6 +431,21 @@ class _PageMetadataParser(HTMLParser):
         self._page_url = ""
         self._canonical_href: str | None = None
         self._canonical_link_count = 0
+        self._lang: str | None = None
+        self._has_viewport = False
+        self._og: set[str] = set()
+        self._twitter_card = False
+        self._in_body = False
+        self._skip_depth = 0
+        self._jsonld_open = False
+        self._jsonld_buffer: list[str] = []
+        self._jsonld_blocks: list[str] = []
+        self._word_count = 0
+        self._excerpt_parts: list[str] = []
+        self._excerpt_length = 0
+        self._h1_open = False
+        self._h1_done = False
+        self._h1_parts: list[str] = []
 
     def set_page_url(self, page_url: str) -> None:
         self._page_url = page_url
@@ -384,10 +457,25 @@ class _PageMetadataParser(HTMLParser):
             for name, value in attrs
             if value is not None
         }
+        if normalized_tag == "html" and self._lang is None:
+            self._lang = " ".join((attributes.get("lang") or "").split())[:35] or None
+        elif normalized_tag == "body":
+            self._in_body = True
+        if normalized_tag in _SKIPPED_TEXT_TAGS:
+            self._skip_depth += 1
+            if (
+                normalized_tag == "script"
+                and "ld+json" in attributes.get("type", "").casefold()
+                and len(self._jsonld_blocks) < _MAX_JSONLD_BLOCKS
+            ):
+                self._jsonld_open = True
+                self._jsonld_buffer = []
         if normalized_tag == "title":
             self._in_title = True
         elif normalized_tag == "h1":
             self._h1_count += 1
+            if not self._h1_done:
+                self._h1_open = True
         elif normalized_tag == "h2":
             self._h2_count += 1
         elif normalized_tag == "a":
@@ -427,6 +515,15 @@ class _PageMetadataParser(HTMLParser):
                 self._description = description or None
         if normalized_tag == "meta":
             name = attributes.get("name", "").casefold()
+            prop = attributes.get("property", "").casefold()
+            if name == "viewport" and attributes.get("content", "").strip():
+                self._has_viewport = True
+            if prop in {"og:title", "og:description", "og:image"} and attributes.get(
+                "content", ""
+            ).strip():
+                self._og.add(prop)
+            if name == "twitter:card" and attributes.get("content", "").strip():
+                self._twitter_card = True
             if name in {"robots", "googlebot"}:
                 self._robots_meta_seen = True
                 if _has_noindex(attributes.get("content", "")):
@@ -439,14 +536,56 @@ class _PageMetadataParser(HTMLParser):
                     self._canonical_href = attributes.get("href")
 
     def handle_endtag(self, tag: str) -> None:
-        if tag.lower() == "title":
+        normalized = tag.lower()
+        if normalized == "title":
             self._in_title = False
+        elif normalized == "h1" and self._h1_open:
+            self._h1_open = False
+            self._h1_done = True
+        if normalized in _SKIPPED_TEXT_TAGS:
+            if normalized == "script" and self._jsonld_open:
+                self._jsonld_open = False
+                self._jsonld_blocks.append("".join(self._jsonld_buffer))
+                self._jsonld_buffer = []
+            self._skip_depth = max(0, self._skip_depth - 1)
 
     def handle_data(self, data: str) -> None:
+        if self._jsonld_open:
+            used = sum(len(part) for part in self._jsonld_buffer)
+            if used < _MAX_JSONLD_BLOCK:
+                self._jsonld_buffer.append(data[: _MAX_JSONLD_BLOCK - used])
+            return
         if self._in_title and self._title_length < 300:
             part = data[: 300 - self._title_length]
             self._title_parts.append(part)
             self._title_length += len(part)
+        if self._in_body and self._skip_depth == 0:
+            words = data.split()
+            if words:
+                self._word_count = min(self._word_count + len(words), 1_000_000)
+                if self._excerpt_length < _MAX_EXCERPT:
+                    text = " ".join(words)[: _MAX_EXCERPT - self._excerpt_length]
+                    self._excerpt_parts.append(text)
+                    self._excerpt_length += len(text) + 1
+                if self._h1_open and sum(len(p) for p in self._h1_parts) < _MAX_H1_TEXT:
+                    self._h1_parts.append(" ".join(words))
+
+    @property
+    def signals(self) -> PageSignals:
+        h1_text = " ".join(" ".join(self._h1_parts).split())[:_MAX_H1_TEXT] or None
+        excerpt = " ".join(" ".join(self._excerpt_parts).split())[:_MAX_EXCERPT] or None
+        return PageSignals(
+            lang=self._lang,
+            has_viewport=self._has_viewport,
+            og_title="og:title" in self._og,
+            og_description="og:description" in self._og,
+            og_image="og:image" in self._og,
+            twitter_card=self._twitter_card,
+            jsonld_types=_jsonld_types(self._jsonld_blocks),
+            word_count=self._word_count,
+            h1_text=h1_text,
+            excerpt=excerpt,
+        )
 
     @property
     def title(self) -> str | None:
@@ -656,6 +795,7 @@ def _page_metadata(
             parser.canonical_href,
         ),
         canonical_link_count=parser.canonical_link_count,
+        signals=parser.signals,
     )
 
 
@@ -1020,6 +1160,7 @@ class HomepageCrawler:
             self._transport,
             deadline,
         )
+        robots_txt: str | None = None
         sitemap_urls: tuple[str, ...] = ()
         sitemap_declaration_count = 0
         sitemap_rejected_count = 0
@@ -1033,6 +1174,9 @@ class HomepageCrawler:
             robots_parser.parse(
                 robots_response.body.decode("utf-8", errors="replace").splitlines()
             )
+            robots_txt = robots_response.body.decode("utf-8", errors="replace")[
+                :_MAX_ROBOTS_TXT
+            ]
             (
                 sitemap_urls,
                 sitemap_declaration_count,
@@ -1154,6 +1298,63 @@ class HomepageCrawler:
             internal_urls=(
                 metadata.internal_urls if metadata is not None else ()
             ),
+            homepage_signals=metadata.signals if metadata is not None else None,
+            robots_txt=robots_txt,
+        )
+
+    def probe(self, scheme: str, host: str, path: str) -> int | None:
+        """Return the HTTP status of one same-host GET (for example /llms.txt), or None."""
+        if scheme not in {"http", "https"} or not path.startswith("/") or len(path) > 200:
+            return None
+        try:
+            _, response, _ = _fetch_url(
+                f"{scheme}://{host}{path}",
+                host,
+                self._resolver,
+                self._transport,
+                monotonic() + 6.0,
+            )
+        except CrawlError:
+            return None
+        return response.status_code
+
+    def snapshot_page(self, scheme: str, host: str, page_url: str) -> PageEvidence:
+        """Fetch one same-host page (robots-checked) and return its evidence and signals.
+
+        Used by fix drafting so the agent reads the live page rather than stale stored data.
+        """
+        page_url, scheme, host = _validated_url(page_url, host)
+        deadline = monotonic() + _MAX_RUN_SECONDS
+        robots_parser: RobotFileParser | None = None
+        try:
+            _, robots_response, _ = _fetch_url(
+                f"{scheme}://{host}/robots.txt", host, self._resolver, self._transport, deadline
+            )
+            if 200 <= robots_response.status_code < 300:
+                robots_parser = RobotFileParser()
+                robots_parser.parse(
+                    robots_response.body.decode("utf-8", errors="replace").splitlines()
+                )
+        except (CrawlUnavailable, CrawlPolicyError, CrawlDisallowed):
+            robots_parser = None
+        final_url, response, _ = _fetch_url(
+            page_url, host, self._resolver, self._transport, deadline, robots_parser=robots_parser
+        )
+        content_type = response.headers.get("content-type", "")
+        metadata = _page_metadata(content_type, response.body, final_url)
+        if metadata is None:
+            return PageEvidence(
+                url=_without_query(final_url), status="unsupported_content_type",
+                http_status_code=response.status_code, content_type=content_type,
+            )
+        return PageEvidence(
+            url=_without_query(final_url), status="fetched",
+            http_status_code=response.status_code, content_type=content_type,
+            bytes_read=len(response.body), title=metadata.title,
+            meta_description=metadata.description, h1_count=metadata.h1_count,
+            h2_count=metadata.h2_count, internal_link_count=metadata.internal_link_count,
+            image_count=metadata.image_count,
+            missing_alt_text_count=metadata.missing_alt_text_count, signals=metadata.signals,
         )
 
     def crawl_pages(
@@ -1269,6 +1470,7 @@ class HomepageCrawler:
                         if metadata is not None
                         else None
                     ),
+                    signals=metadata.signals if metadata is not None else None,
                 )
             )
         return replace(homepage, page_evidence=tuple(evidence))

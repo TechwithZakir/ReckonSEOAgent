@@ -993,3 +993,40 @@ executor, SEO engines and the Claude plugin now exist). Remaining gaps:
   example.com returned a real report; private targets returned 422 without fetching.
 - Not verified: the pages were never viewed in a browser (no browser here); mobile drawer and
   print layout are untested visually.
+
+- Follow-up 2026-11-24: the public audit now follows the apex/www redirect (reckon.tech -> www.reckon.tech failed with a generic 502 because the crawler never leaves the host). It tries the alternate host only after a cross-host redirect, reports a notice, and gives specific error text (robots disallow, offline). Findings carry `autopilot: propose|manual` (propose = title, meta description, H1, canonical, which the executor can apply after approval); landing copy reframed as an AI SEO agent. Tests: 366 Python, 120 web.
+
+## Advanced audit and AI fix drafting — 2026-11-24
+
+- Crawler: `PageSignals` (lang, viewport, Open Graph/Twitter, JSON-LD types, word count, H1
+  text, 400-char excerpt) on the homepage and every fetched page, a bounded `robots_txt`
+  copy, `HomepageCrawler.probe()` (one same-host status check) and `snapshot_page()` (one
+  robots-checked, same-host page read). Signals persist inside the existing `page_evidence`
+  JSON, so no migration. The excerpt and H1 text are untrusted page content.
+- Public audit adds: mobile viewport, page language, social tags, structured data, thin
+  content, duplicate titles/descriptions across pages, AI-crawler access in robots.txt
+  (GPTBot, ClaudeBot, PerplexityBot, etc.), and an unscored llms.txt check. Categories:
+  Mobile & social, Structured data, AI search. Blocking AI crawlers is reported as a choice.
+- `FixDraftingAgent` (`reckon_core/fix_drafting.py`, skill `on_page/skills_metadata_optimization.md`
+  now active): one tool-less model call through the tenant-bound gateway. Trusted field, limits
+  and host; the page snapshot is passed as quoted `page_data_untrusted`. Output is validated
+  deterministically (JSON contract, length per field, no markup/links/control characters, no
+  instruction-like text, must differ from the live value); invalid output is audited and
+  discarded. Audit events `agent.run.*` carry attribution.
+- `POST /api/v1/organizations/{org}/websites/{site}/fix-drafts` (Owner/Admin, metered, needs
+  AI settings and a verified website, `Idempotency-Key`): reads the live page, drafts, then
+  creates a `low`-risk `SeoActionProposal` with before/proposed values. It is never applied
+  here; the existing approve, execute, verify and rollback lifecycle applies. Optional
+  `wp_type`/`wp_id`/`wp_modified_gmt` carry WordPress identity for REST execution; without
+  them REST apply fails closed ("does not identify a WordPress post") and the Claude plugin or
+  manual path is used. Resolving a post from its URL is not implemented.
+- New `RECKON_AI_AGENT_DAILY_TOKEN_LIMIT` (default 200000). The adapter's input bound is
+  4 bytes per token, so a drafting call reserves roughly 22k tokens until settled.
+  `reckon_api/specialist_runtime.py` holds the shared gateway builder; `prioritize_crawl`
+  still has its own copy (not refactored, no API-level test covers it).
+- Web: "Draft a fix with AI" panel at the top of the Approval Inbox (website picker limited
+  to verified sites, field, optional page path); landing page lists the new checks.
+- Validation: `pytest tests -q` 393 passed, `ruff --select F` clean, `tsc -b` clean,
+  `npm test` 128 passed, `vite build` ok; live public audit of reckon.tech returned all new
+  checks. The drafting route is tested with a mocked provider and fake site only: no real
+  model call, no real WordPress write, and the new panel was not viewed in a browser.

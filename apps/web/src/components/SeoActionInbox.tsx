@@ -15,6 +15,7 @@ import {
 } from '../lib/seo-actions'
 import type { SeoAction } from '../lib/seo-actions'
 import type { OrganizationContext } from '../lib/organizations'
+import { AiFixDraft } from './AiFixDraft'
 
 const CONNECTOR_NOTE =
   'Apply now uses the connected WordPress site (needs the Reckon SEO Connector plugin). Otherwise ask the Claude plugin to apply it; Reckon verifies either way.'
@@ -186,6 +187,9 @@ export function SeoActionInbox({
         <h2>Approval Inbox</h2>
         {error && <p className="workspace-setup__error" role="alert">{error}</p>}
         {message && <p role="status">{message}</p>}
+        {(organization.role === 'owner' || organization.role === 'admin') && (
+          <AiFixDraft accessToken={accessToken} organization={organization} onDrafted={() => void refresh()} />
+        )}
         {(organization.role === 'owner' || organization.role === 'admin') && (
           <form className="workspace-form" onSubmit={(event) => void propose(event)}>
             <label htmlFor="action-website">Website ID</label>

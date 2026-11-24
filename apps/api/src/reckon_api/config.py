@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     crawl_worker_enabled: bool = False
     crawl_broker_url: str | None = None
     ai_test_daily_token_limit: int = Field(default=10000, ge=640)
+    # Daily model-token ceiling per organization for specialist agent runs (e.g. fix drafting).
+    ai_agent_daily_token_limit: int = Field(default=200_000, ge=640)
     credential_encryption_key: SecretStr | None = None
     native_auth_enabled: bool = False
     smtp_host: str | None = None

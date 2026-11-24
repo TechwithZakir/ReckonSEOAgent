@@ -4,6 +4,7 @@ import {
   parsePublicAudit,
   PublicAuditError,
   runPublicAudit,
+  autopilotSummary,
   scoreTone,
   severityCounts,
 } from './public-audit'
@@ -11,12 +12,13 @@ import {
 const finding = {
   id: 'missing_title', category: 'On-page', severity: 'medium', title: 'No title',
   found: 'x', why_it_matters: 'y', how_to_fix: 'z', url: 'https://example.com/',
+  autopilot: 'propose',
 }
 const report = {
   host: 'example.com', final_url: 'https://example.com/', score: 80, grade: 'B',
   pages_checked: 3, findings: [finding],
   checks: [{ category: 'On-page', label: 'Title', passed: false }],
-  audit_version: 'public-v4', cached: false,
+  audit_version: 'public-v4', notice: null, cached: false,
 }
 const ok = (body: unknown) => new Response(JSON.stringify(body), { status: 200 })
 const asFetch = (fn: unknown) => fn as typeof fetch
@@ -31,6 +33,7 @@ describe('public audit client', () => {
     { ...report, grade: 'Z' },
     { ...report, findings: [{ ...finding, severity: 'critical' }] },
     { ...report, findings: [{ ...finding, how_to_fix: 5 }] },
+    { ...report, findings: [{ ...finding, autopilot: 'auto' }] },
     { ...report, checks: [{ label: 'x' }] },
     null,
   ])('rejects malformed payloads', (value) => {
@@ -69,6 +72,7 @@ describe('public audit client', () => {
     ] as never
     expect(severityCounts(items)).toEqual({ high: 1, medium: 1, low: 0 })
     expect([...groupFindings(items).keys()]).toEqual(['On-page', 'Crawlability'])
+    expect(autopilotSummary([finding, { ...finding, autopilot: 'manual' }] as never)).toEqual({ fixable: 1, total: 2 })
     expect([scoreTone(90), scoreTone(60), scoreTone(10)]).toEqual(['good', 'fair', 'poor'])
   })
 })

@@ -9,6 +9,7 @@ export type PublicFinding = {
   why_it_matters: string
   how_to_fix: string
   url: string
+  autopilot: 'propose' | 'manual'
 }
 
 export type PublicCheck = { category: string; label: string; passed: boolean }
@@ -22,6 +23,7 @@ export type PublicAuditReport = {
   findings: PublicFinding[]
   checks: PublicCheck[]
   audit_version: string
+  notice: string | null
   cached: boolean
 }
 
@@ -41,6 +43,7 @@ function parseFinding(value: unknown): PublicFinding {
   if (
     !isRecord(value) ||
     !['high', 'medium', 'low'].includes(String(value.severity)) ||
+    !['propose', 'manual'].includes(String(value.autopilot)) ||
     ['id', 'category', 'title', 'found', 'why_it_matters', 'how_to_fix', 'url'].some(
       (key) => typeof value[key] !== 'string',
     )
@@ -86,6 +89,7 @@ export function parsePublicAudit(value: unknown): PublicAuditReport {
     findings: value.findings.map(parseFinding),
     checks,
     audit_version: typeof value.audit_version === 'string' ? value.audit_version : '',
+    notice: typeof value.notice === 'string' ? value.notice : null,
     cached: value.cached === true,
   }
 }
@@ -93,7 +97,7 @@ export function parsePublicAudit(value: unknown): PublicAuditReport {
 const FRIENDLY: Record<number, string> = {
   422: 'Enter a public website address such as example.com.',
   429: 'You have reached the hourly audit limit. Please try again later or create an account.',
-  502: 'We could not reach that website. Check the address and that the site is online.',
+  502: 'We could not audit that website. It may be offline or blocking automated requests.',
   503: 'The audit service is busy. Please try again in a minute.',
   404: 'The free audit is not available right now.',
 }
@@ -120,7 +124,7 @@ export async function runPublicAudit(
     let detail: string | null = null
     try {
       const body: unknown = await response.json()
-      if (isRecord(body) && typeof body.detail === 'string' && response.status === 422) {
+      if (isRecord(body) && typeof body.detail === 'string' && [422, 502].includes(response.status)) {
         detail = body.detail
       }
     } catch {
@@ -150,4 +154,11 @@ export function severityCounts(findings: PublicFinding[]): Record<Severity, numb
   const counts: Record<Severity, number> = { high: 0, medium: 0, low: 0 }
   for (const finding of findings) counts[finding.severity] += 1
   return counts
+}
+
+export function autopilotSummary(findings: PublicFinding[]): { fixable: number; total: number } {
+  return {
+    fixable: findings.filter((finding) => finding.autopilot === 'propose').length,
+    total: findings.length,
+  }
 }

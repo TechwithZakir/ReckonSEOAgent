@@ -39,6 +39,7 @@ class PublicFindingModel(BaseModel):
     why_it_matters: str
     how_to_fix: str
     url: str
+    autopilot: Literal["propose", "manual"]
 
 
 class PublicCheckModel(BaseModel):
@@ -56,6 +57,7 @@ class PublicAuditResponse(BaseModel):
     findings: list[PublicFindingModel]
     checks: list[PublicCheckModel]
     audit_version: str
+    notice: str | None = None
     cached: bool = False
 
 

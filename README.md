@@ -70,6 +70,7 @@ see [LICENSE](./LICENSE). The package metadata uses `LicenseRef-Proprietary`.
 - [x] Run the read-only technical audit prioritizer through a tenant-bound gateway with typed output and unknown-outcome reconciliation.
 - [x] Expand homepage checks with H2 structure, same-host links and image alt-text evidence.
 - [x] Add a free, unauthenticated, rate-limited public website SEO audit with a landing page.
+- [x] Add advanced audit checks (mobile, social, structured data, AI-crawler access, duplicates) and an approval-gated AI fix-drafting agent.
 
 The liveness endpoint confirms only that the API process responds. The readiness endpoint
 checks the configured database. Authenticated organization access requires database

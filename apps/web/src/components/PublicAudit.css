@@ -393,3 +393,25 @@
   .pa-spinner { animation: none; }
   .pa-ring__value { transition: none; }
 }
+
+.pa-agent {
+  flex: none;
+  padding: 2px 8px;
+  color: #5b3fd0;
+  background: #efeaff;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.pa-agent-summary,
+.pa-notice {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 10px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.pa-agent-summary { color: #3c2a99; background: #efeaff; }
+.pa-notice { color: var(--pa-amber); background: var(--pa-amber-soft); }

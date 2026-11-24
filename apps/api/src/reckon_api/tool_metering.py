@@ -18,6 +18,8 @@ def _call_name(request: Request) -> str:
     if "seo-actions" in segments:
         suffix = segments[segments.index("seo-actions") + 2 :]
         return f"seo-actions.{request.method.lower()}.{suffix[0] if suffix else 'collection'}"
+    if "fix-drafts" in segments:
+        return "fix-drafts.post"
     return "unknown"
 
 

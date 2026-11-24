@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import {
+  autopilotSummary,
   groupFindings,
   runPublicAudit,
   scoreTone,
@@ -39,11 +40,18 @@ function FindingCard({ finding }: { finding: PublicFinding }) {
           {SEVERITY_LABEL[finding.severity]}
         </span>
         <span className="pa-finding__title">{finding.title}</span>
+        {finding.autopilot === 'propose' && <span className="pa-agent" title="Autopilot can propose this fix">AI fix</span>}
       </summary>
       <dl>
         <div><dt>What we found</dt><dd>{finding.found}</dd></div>
         <div><dt>Why it matters</dt><dd>{finding.why_it_matters}</dd></div>
         <div><dt>How to fix it</dt><dd>{finding.how_to_fix}</dd></div>
+        <div>
+          <dt>Autopilot</dt>
+          <dd>{finding.autopilot === 'propose'
+            ? 'Autopilot can propose this fix. Nothing changes until you approve it, and every change is verified by a re-crawl.'
+            : 'This needs a manual change (server, theme or content work) that Autopilot cannot apply yet.'}</dd>
+        </div>
         <div>
           <dt>Page</dt>
           <dd className="pa-finding__url">{finding.url}</dd>
@@ -59,6 +67,7 @@ export function AuditReport({ report, onSignUp }: {
 }) {
   const counts = severityCounts(report.findings)
   const groups = [...groupFindings(report.findings).entries()]
+  const agent = autopilotSummary(report.findings)
   const passed = report.checks.filter((check) => check.passed)
   const failed = report.checks.filter((check) => !check.passed)
   return (
@@ -84,6 +93,14 @@ export function AuditReport({ report, onSignUp }: {
         </button>
       </header>
 
+      {report.notice && <p className="pa-notice" role="status">{report.notice}</p>}
+      {agent.total > 0 && (
+        <p className="pa-agent-summary">
+          <strong>Autopilot can propose fixes for {agent.fixable} of {agent.total} issues.</strong>{' '}
+          Connect your site and the agent drafts each change, waits for your approval, applies it
+          and verifies the result.
+        </p>
+      )}
       <p className="pa-note">
         The score reflects only the issues this audit found on the pages it checked. It is not a
         ranking prediction. A clean result means these checks passed, not that rankings are guaranteed.
@@ -122,9 +139,9 @@ export function AuditReport({ report, onSignUp }: {
       {onSignUp && (
         <aside className="pa-cta">
           <div>
-            <h3>Want these fixed for you?</h3>
-            <p>Create a free account to monitor this site, get approval-gated fixes, and see
-              every change verified by a re-crawl.</p>
+            <h3>Let the AI agent fix these for you</h3>
+            <p>Create a free account to connect this site. The agent proposes fixes, you approve,
+              and every change is verified by a re-crawl, with rollback if anything looks wrong.</p>
           </div>
           <button className="pa-button pa-button--primary" type="button" onClick={onSignUp}>
             Create your account

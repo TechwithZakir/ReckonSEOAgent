@@ -6,11 +6,14 @@ of audit weight not lost to the issues this audit found; it is not a ranking pre
 
 import ipaddress
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
+from collections import defaultdict
 from urllib.parse import urlsplit
+from urllib.robotparser import RobotFileParser
 
 from reckon_core.crawler import (
+    CrawlDisallowed,
     CrawlError,
     CrawlResult,
     CrawlUnavailable,
@@ -20,7 +23,10 @@ from reckon_core.crawler import (
 from reckon_core.seo_audit import audit_homepage
 
 Severity = Literal["high", "medium", "low"]
-Category = Literal["Crawlability", "On-page", "Content structure", "Images", "Sitemaps"]
+Category = Literal[
+    "Crawlability", "On-page", "Content structure", "Images", "Sitemaps",
+    "Mobile & social", "Structured data", "AI search",
+]
 
 _MAX_INPUT_LENGTH = 253
 _LABEL = re.compile(r"^(?!-)[a-z0-9-]{1,63}(?<!-)$")
@@ -65,6 +71,23 @@ _WHY: dict[str, str] = {
 }
 
 
+# Finding kinds the governed executor can apply (title, meta description, H1, canonical).
+# Autopilot proposes these; nothing is changed without the owner's approval.
+_AI_CRAWLERS = (
+    "GPTBot", "ChatGPT-User", "ClaudeBot", "anthropic-ai", "PerplexityBot",
+    "Google-Extended", "CCBot", "Applebot-Extended",
+)
+_THIN_WORDS = 150
+
+_AUTOPILOT_CODES = frozenset({
+    "duplicate_titles", "duplicate_descriptions",
+    "missing_title", "missing_meta_description", "missing_h1", "title_length",
+    "description_length", "invalid_canonical_url", "multiple_canonical_links",
+    "cross_host_canonical", "page_missing_title", "page_missing_description",
+    "page_missing_h1", "page_multiple_h1",
+})
+
+
 class PublicAuditTargetError(ValueError):
     """The submitted address is not an auditable public website."""
 
@@ -83,6 +106,7 @@ class PublicFinding:
     why_it_matters: str
     how_to_fix: str
     url: str
+    autopilot: Literal["propose", "manual"] = "manual"
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +126,7 @@ class PublicAuditReport:
     findings: tuple[PublicFinding, ...]
     checks: tuple[PublicCheck, ...]
     audit_version: str
+    notice: str | None = None
 
 
 def normalize_target(raw: str) -> tuple[str, str]:
@@ -227,7 +252,118 @@ def _length_findings(result: CrawlResult) -> list[PublicFinding]:
     return findings
 
 
-def build_report(host: str, result: CrawlResult) -> PublicAuditReport:
+def _f(
+    id_: str, category: Category, severity: Severity, title: str, found: str,
+    why: str, fix: str, url: str,
+) -> PublicFinding:
+    return PublicFinding(
+        id=id_, category=category, severity=severity, title=title, found=found,
+        why_it_matters=why, how_to_fix=fix, url=url)
+
+
+def _signal_findings(result: CrawlResult) -> list[PublicFinding]:
+    signals = result.homepage_signals
+    if signals is None:
+        return []
+    url = result.final_url
+    findings: list[PublicFinding] = []
+    if not signals.has_viewport:
+        findings.append(_f(
+            "missing_viewport", "Mobile & social", "medium", "No mobile viewport tag",
+            "The homepage has no <meta name=\"viewport\">.",
+            "Without it, phones render a zoomed-out desktop page and Google's mobile-first "
+            "indexing sees a poor mobile experience.",
+            "Add <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"> to the head.",
+            url))
+    if not signals.lang:
+        findings.append(_f(
+            "missing_lang", "Mobile & social", "low", "No page language declared",
+            "The <html> element has no lang attribute.",
+            "Language hints help search engines and screen readers serve the right audience.",
+            "Set <html lang=\"en\"> (or your language code).", url))
+    missing = [
+        label for label, present in (
+            ("og:title", signals.og_title), ("og:description", signals.og_description),
+            ("og:image", signals.og_image), ("twitter:card", signals.twitter_card),
+        ) if not present
+    ]
+    if missing:
+        findings.append(_f(
+            "missing_social_tags", "Mobile & social", "low", "Social sharing tags are incomplete",
+            f"Missing on the homepage: {', '.join(missing)}.",
+            "Open Graph and Twitter tags control the title, summary and image shown when the "
+            "page is shared, which drives clicks from social and chat apps.",
+            "Add the missing Open Graph / Twitter Card tags with an accurate title, summary "
+            "and a 1200x630 image.", url))
+    if not signals.jsonld_types:
+        findings.append(_f(
+            "no_structured_data", "Structured data", "low", "No structured data (JSON-LD) found",
+            "No application/ld+json block was found on the homepage.",
+            "Schema.org markup gives search engines and AI assistants unambiguous facts "
+            "(organization, products, articles) and can unlock rich results.",
+            "Add JSON-LD for your Organization or WebSite, then page-level types such as "
+            "Article, Product or FAQ where they apply.", url))
+    if signals.word_count < _THIN_WORDS:
+        findings.append(_f(
+            "thin_content", "Content structure", "low", "Homepage has very little text",
+            f"About {signals.word_count} words of visible text were found "
+            f"(under {_THIN_WORDS}).",
+            "Pages with almost no text give search engines and AI assistants little to "
+            "understand or cite.",
+            "Describe who you help, what you offer and why you are credible in plain "
+            "language on the page.", url))
+    return findings
+
+
+def _duplicate_findings(result: CrawlResult) -> list[PublicFinding]:
+    pages: list[tuple[str, str | None, str | None]] = [
+        (result.final_url, result.title, result.meta_description)
+    ]
+    for page in result.page_evidence:
+        if page.status == "fetched" and (page.http_status_code or 200) < 300:
+            pages.append((page.url, page.title, page.meta_description))
+    findings: list[PublicFinding] = []
+    for index, (label, code, title) in enumerate((
+        ("title", "duplicate_titles", "Several pages share the same title"),
+        ("meta description", "duplicate_descriptions", "Several pages share the same meta description"),
+    )):
+        groups: dict[str, list[str]] = defaultdict(list)
+        for url, page_title, description in pages:
+            value = (page_title, description)[index]
+            if value and value.strip():
+                groups[value.strip().casefold()].append(url)
+        for urls in groups.values():
+            if len(urls) > 1:
+                findings.append(_f(
+                    code, "On-page", "medium" if index == 0 else "low", title,
+                    f"{len(urls)} pages use the same {label}: {', '.join(urls[:3])}.",
+                    "Duplicate titles and descriptions make pages compete with each other and "
+                    "give searchers no reason to choose one.",
+                    f"Give each page a unique {label} that describes that page.", urls[0]))
+                break
+    return findings
+
+
+def _ai_crawler_findings(result: CrawlResult) -> tuple[list[PublicFinding], bool | None]:
+    """Return findings and whether AI crawlers are allowed (None when robots.txt is absent)."""
+    if not result.robots_txt:
+        return [], None
+    parser = RobotFileParser()
+    parser.parse(result.robots_txt.splitlines())
+    blocked = [bot for bot in _AI_CRAWLERS if not parser.can_fetch(bot, "/")]
+    if not blocked:
+        return [], True
+    return [_f(
+        "ai_crawlers_blocked", "AI search", "low", "robots.txt blocks AI crawlers",
+        f"Blocked from the homepage: {', '.join(blocked)}.",
+        "AI assistants such as ChatGPT, Claude and Perplexity cannot read or cite pages their "
+        "crawlers are blocked from.",
+        "If you want to appear in AI answers, allow these user agents in robots.txt. Blocking "
+        "them is a legitimate choice if you prefer not to be used.",
+        result.final_url)], False
+
+
+def build_report(host: str, result: CrawlResult, llms_txt_status: int | None = None) -> PublicAuditReport:
     audit = audit_homepage(result)
     findings: list[PublicFinding] = []
     for item in audit.findings:
@@ -237,7 +373,15 @@ def build_report(host: str, result: CrawlResult) -> PublicAuditReport:
             why_it_matters=_WHY[item.code], how_to_fix=item.recommendation, url=item.source_url))
     findings.extend(_length_findings(result))
     findings.extend(_page_findings(result.page_evidence))
+    findings.extend(_signal_findings(result))
+    findings.extend(_duplicate_findings(result))
+    ai_findings, ai_allowed = _ai_crawler_findings(result)
+    findings.extend(ai_findings)
 
+    findings = [
+        replace(f, autopilot="propose") if f.id.split(":")[0] in _AUTOPILOT_CODES else f
+        for f in findings
+    ]
     penalty = sum(_PENALTY[f.severity] for f in findings)
     score = max(0, 100 - penalty)
     codes = {f.id.split(":")[0] for f in findings}
@@ -258,6 +402,17 @@ def build_report(host: str, result: CrawlResult) -> PublicAuditReport:
         PublicCheck("Images", "Images have alt text", ok("images_missing_alt_text", "page_images_missing_alt")),
         PublicCheck("Sitemaps", "Sitemap is present and lists the homepage", ok(
             "empty_sitemap", "homepage_not_in_sitemap", "canonical_not_in_sitemap")),
+        PublicCheck("On-page", "Titles and descriptions are unique", ok(
+            "duplicate_titles", "duplicate_descriptions")),
+        PublicCheck("Mobile & social", "Mobile viewport and page language set", ok(
+            "missing_viewport", "missing_lang")),
+        PublicCheck("Mobile & social", "Social sharing tags present", ok("missing_social_tags")),
+        PublicCheck("Structured data", "Structured data (JSON-LD) present", ok("no_structured_data")),
+        PublicCheck("Content structure", "Page has enough text", ok("thin_content")),
+        PublicCheck("AI search", "AI crawlers are allowed in robots.txt",
+                    ai_allowed is not False),
+        PublicCheck("AI search", "llms.txt present (optional convention, no score impact)",
+                    llms_txt_status is not None and 200 <= llms_txt_status < 300),
     )
     order = {"high": 0, "medium": 1, "low": 2}
     findings.sort(key=lambda f: (order[f.severity], f.category, f.id))
@@ -267,17 +422,44 @@ def build_report(host: str, result: CrawlResult) -> PublicAuditReport:
         findings=tuple(findings[:60]), checks=checks, audit_version=f"public-{audit.version}")
 
 
+def _alternate_host(host: str) -> str:
+    return host[4:] if host.startswith("www.") else f"www.{host}"
+
+
 def run_public_audit(crawler: HomepageCrawler, raw_target: str, max_pages: int = 5) -> PublicAuditReport:
+    """Audit a site, following the common apex <-> www redirect (the crawler itself never
+    leaves the host it was given). The alternate host is tried only when the first host
+    answered with a cross-host redirect, so an offline site is not retried slowly."""
     scheme, host = normalize_target(raw_target)
     last_error: CrawlError | None = None
-    for candidate in dict.fromkeys((scheme, "http" if scheme == "https" else "https")):
-        try:
-            return build_report(host, crawler.crawl_pages(candidate, host, max_pages=max_pages))
-        except CrawlUnavailable as error:
-            last_error = error
-            continue
-        except CrawlError as error:
-            raise PublicAuditUnavailable(str(error)) from error
+    for candidate_host in (host, _alternate_host(host)):
+        redirected_away = False
+        for candidate in dict.fromkeys((scheme, "http" if scheme == "https" else "https")):
+            try:
+                crawled = crawler.crawl_pages(candidate, candidate_host, max_pages=max_pages)
+                report = build_report(
+                    candidate_host, crawled, crawler.probe(candidate, candidate_host, "/llms.txt")
+                )
+            except CrawlDisallowed as error:
+                raise PublicAuditUnavailable(
+                    "That site's robots.txt does not allow automated audits of its homepage."
+                ) from error
+            except CrawlUnavailable as error:
+                last_error = error
+                continue
+            except CrawlError as error:
+                last_error = error
+                redirected_away = True
+                break
+            if candidate_host != host:
+                report = replace(
+                    report,
+                    notice=f"{host} redirects to {candidate_host}, so we audited {candidate_host}.",
+                )
+            return report
+        if not redirected_away:
+            break
     raise PublicAuditUnavailable(
-        "We could not reach that website. Check the address and that it is online."
+        "We could not audit that website. It may be offline, blocking automated requests, "
+        "redirecting to another domain, or serving non-HTML content."
     ) from last_error
