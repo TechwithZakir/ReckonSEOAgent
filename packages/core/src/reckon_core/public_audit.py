@@ -426,7 +426,9 @@ def _alternate_host(host: str) -> str:
     return host[4:] if host.startswith("www.") else f"www.{host}"
 
 
-def run_public_audit(crawler: HomepageCrawler, raw_target: str, max_pages: int = 5) -> PublicAuditReport:
+def run_public_audit(
+    crawler: HomepageCrawler, raw_target: str, max_pages: int = 5, follow_www: bool = True
+) -> PublicAuditReport:
     """Audit a site, following the common apex <-> www redirect (the crawler itself never
     leaves the host it was given). The alternate host is tried only when the first host
     answered with a cross-host redirect, so an offline site is not retried slowly."""
@@ -457,7 +459,7 @@ def run_public_audit(crawler: HomepageCrawler, raw_target: str, max_pages: int =
                     notice=f"{host} redirects to {candidate_host}, so we audited {candidate_host}.",
                 )
             return report
-        if not redirected_away:
+        if not redirected_away or not follow_www:
             break
     raise PublicAuditUnavailable(
         "We could not audit that website. It may be offline, blocking automated requests, "

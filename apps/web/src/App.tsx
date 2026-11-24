@@ -582,6 +582,11 @@ function Dashboard({ onNavigate }: { onNavigate: (path: string) => void }) {
               page={activeNavigation}
               accessToken={auth.status === 'signed-in' ? auth.user?.access_token ?? '' : ''}
               organization={workspace}
+              onNavigate={(label) => {
+                setActiveNavigation(label)
+                setMenuOpen(false)
+                window.scrollTo({ top: 0, behavior: 'smooth' })
+              }}
             />
             )
           ) : (

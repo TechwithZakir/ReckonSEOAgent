@@ -16,6 +16,8 @@ import {
 import type { SeoAction } from '../lib/seo-actions'
 import type { OrganizationContext } from '../lib/organizations'
 import { AiFixDraft } from './AiFixDraft'
+import { listWebsites } from '../lib/websites'
+import type { Website } from '../lib/websites'
 
 const CONNECTOR_NOTE =
   'Apply now uses the connected WordPress site (needs the Reckon SEO Connector plugin). Otherwise ask the Claude plugin to apply it; Reckon verifies either way.'
@@ -40,6 +42,7 @@ export function SeoActionInbox({
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [websiteId, setWebsiteId] = useState('')
+  const [sites, setSites] = useState<Website[]>([])
   const [targetUrl, setTargetUrl] = useState('')
   const [targetVersion, setTargetVersion] = useState('v1')
   const [actionType, setActionType] = useState<'meta_title' | 'meta_description' | 'canonical' | 'heading' | 'schema' | 'redirect' | 'internal_link' | 'other'>('meta_title')
@@ -64,6 +67,19 @@ export function SeoActionInbox({
       .catch((cause: unknown) => {
         if (active) setError(cause instanceof Error ? cause.message : 'Could not load SEO actions.')
       })
+    return () => { active = false }
+  }, [accessToken, organization.organization_id])
+
+  useEffect(() => {
+    let active = true
+    void listWebsites(accessToken, organization.organization_id)
+      .then((rows) => {
+        if (!active) return
+        const verified = rows.filter((site) => site.verification_status === 'verified')
+        setSites(verified)
+        setWebsiteId((current) => current || verified[0]?.website_id || '')
+      })
+      .catch(() => undefined)
     return () => { active = false }
   }, [accessToken, organization.organization_id])
 
@@ -191,9 +207,17 @@ export function SeoActionInbox({
           <AiFixDraft accessToken={accessToken} organization={organization} onDrafted={() => void refresh()} />
         )}
         {(organization.role === 'owner' || organization.role === 'admin') && (
+          <details className="manual-proposal">
+          <summary>Propose a change manually (advanced)</summary>
           <form className="workspace-form" onSubmit={(event) => void propose(event)}>
-            <label htmlFor="action-website">Website ID</label>
-            <input id="action-website" required value={websiteId} disabled={busy} onChange={(event) => setWebsiteId(event.target.value)} />
+            <label htmlFor="action-website">Website</label>
+            {sites.length > 0 ? (
+              <select id="action-website" required value={websiteId} disabled={busy} onChange={(event) => setWebsiteId(event.target.value)}>
+                {sites.map((site) => <option key={site.website_id} value={site.website_id}>{site.origin}</option>)}
+              </select>
+            ) : (
+              <input id="action-website" required placeholder="Website ID" value={websiteId} disabled={busy} onChange={(event) => setWebsiteId(event.target.value)} />
+            )}
             <label htmlFor="action-type">Action type</label>
             <select id="action-type" value={actionType} disabled={busy} onChange={(event) => setActionType(event.target.value as typeof actionType)}>
               <option value="meta_title">Meta title</option>
@@ -223,6 +247,7 @@ export function SeoActionInbox({
             <input id="action-reason" required minLength={3} maxLength={200} value={reason} disabled={busy} onChange={(event) => setReason(event.target.value)} />
             <button className="button button--primary" type="submit" disabled={busy}>Create proposal</button>
           </form>
+          </details>
         )}
         <h3>Proposals</h3>
         {actions.length === 0 && <p>No SEO actions have been proposed.</p>}

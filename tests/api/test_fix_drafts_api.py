@@ -226,3 +226,31 @@ def test_missing_ai_settings_returns_a_clear_conflict(env) -> None:
         "field": "meta_title", "target_url": "https://example.com/"}, key="draft-key-0009")
     assert response.status_code == 409
     assert "AI settings" in response.json()["detail"]
+
+
+def audit_path(org, site) -> str:
+    return f"/api/v1/organizations/{org}/websites/{site}/advanced-audit"
+
+
+def test_advanced_audit_runs_for_members_on_verified_sites_only(env) -> None:
+    app, _, org, (site, unverified) = env
+    for token in (OWNER, VIEWER):
+        result = call(app, "POST", audit_path(org, site), token)
+        assert result.status_code == 200, result.text
+        body = result.json()
+        assert body["host"] == "example.com"
+        assert any(f["id"] == "missing_title" and f["autopilot"] == "propose" for f in body["findings"])
+        assert any(c["label"].startswith("AI crawlers") for c in body["checks"])
+        assert result.headers["cache-control"] == "no-store"
+    assert call(app, "POST", audit_path(org, unverified)).status_code == 409
+    assert call(app, "POST", audit_path(org, "00000000-0000-4000-8000-000000000000")).status_code == 404
+
+
+def test_advanced_audit_is_tenant_scoped(env) -> None:
+    app, factory, org, (site, _) = env
+    with factory.begin() as session:
+        other = Organization(name="Other tenant")
+        session.add(other)
+        session.flush()
+        other_id = other.id
+    assert call(app, "POST", audit_path(other_id, site)).status_code == 404

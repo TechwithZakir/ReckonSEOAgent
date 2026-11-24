@@ -1,0 +1,143 @@
+/*
+ * Single source of truth for form controls in the signed-in app and login pages.
+ * Every text input, select, textarea and label picks up the same design from the
+ * theme tokens defined on .app-shell, so no component needs its own control styles.
+ * Layout (grid/flex/gap) stays in the component's own class.
+ */
+
+.app-shell {
+  --control-height: 42px;
+  --control-radius: 10px;
+  --control-font: 14px;
+  --control-pad-x: 12px;
+}
+
+/* Labels */
+.app-shell label {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.app-shell label:has(> input[type='checkbox']),
+.app-shell label:has(> input[type='radio']) {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+/* Controls */
+.app-shell :is(
+  input:not([type='checkbox'], [type='radio'], [type='range'], [type='file'], [type='hidden'],
+            [type='submit'], [type='button'], [type='reset'], [type='color']),
+  select,
+  textarea
+):not(.pa-input) {
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: var(--control-height);
+  padding: 0 var(--control-pad-x);
+  color: var(--text-primary);
+  background-color: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--control-radius);
+  font: inherit;
+  font-size: var(--control-font);
+  line-height: 1.4;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+/* Full width inside forms; inline controls elsewhere keep their natural width */
+.app-shell form :is(
+  input:not([type='checkbox'], [type='radio'], [type='range'], [type='file'], [type='hidden'],
+            [type='submit'], [type='button'], [type='reset'], [type='color']),
+  select,
+  textarea
+):not(.pa-input) {
+  width: 100%;
+}
+
+.app-shell textarea {
+  min-height: 92px;
+  padding-block: 10px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.app-shell select {
+  padding-right: 36px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8' fill='none' stroke='%2368758a' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m1 1.5 5 5 5-5'/%3E%3C/svg%3E");
+  background-position: right 12px center;
+  background-repeat: no-repeat;
+  background-size: 12px 8px;
+  appearance: none;
+  cursor: pointer;
+}
+
+.app-shell input[type='checkbox'],
+.app-shell input[type='radio'] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--blue);
+}
+
+/* States */
+.app-shell :is(input, select, textarea)::placeholder {
+  color: var(--text-tertiary);
+}
+
+.app-shell :is(input, select, textarea):hover:not(:disabled) {
+  border-color: var(--text-tertiary);
+}
+
+.app-shell :is(input, select, textarea):focus-visible {
+  border-color: var(--blue);
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 25%, transparent);
+}
+
+.app-shell :is(input, select, textarea):disabled {
+  color: var(--text-tertiary);
+  background-color: var(--surface-raised);
+  cursor: not-allowed;
+  opacity: 0.8;
+}
+
+.app-shell :is(input, select, textarea)[aria-invalid='true'] {
+  border-color: var(--red);
+}
+
+/* Help text under a control */
+.app-shell form small {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* Consistent vertical rhythm for stacked forms */
+.app-shell :is(.workspace-form, .website-form, .ai-settings-form, .ai-draft__form) {
+  display: grid;
+  gap: 8px;
+}
+
+.app-shell :is(.workspace-form, .website-form, .ai-settings-form, .ai-draft__form) label:not(:first-child) {
+  margin-top: 6px;
+}
+
+.app-shell :is(.workspace-form, .website-form, .ai-settings-form, .ai-draft__form) button[type='submit'] {
+  margin-top: 8px;
+}
+
+/* A control next to a button (for example an invite email + Send) */
+.app-shell .workspace-form__controls {
+  align-items: stretch;
+}
+
+.app-shell .workspace-form__controls :is(input, select) {
+  flex: 1;
+}

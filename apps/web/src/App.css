@@ -143,13 +143,7 @@
 }
 
 .mock-chat__form input {
-  min-width: 0;
   flex: 1;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: var(--surface);
-  color: var(--text-primary);
-  padding: 10px 12px;
 }
 
 .login-page__header {
@@ -927,36 +921,8 @@
 }
 
 .ai-settings-form {
-  display: grid;
   max-width: 600px;
-  gap: 8px;
   margin-top: 16px;
-}
-
-.ai-settings-form label {
-  color: var(--text-secondary);
-  font-size: 11px;
-  font-weight: 650;
-}
-
-.ai-settings-form input,
-.ai-settings-form select {
-  width: 100%;
-  min-width: 0;
-  min-height: 40px;
-  padding: 0 10px;
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--text-primary);
-  font: inherit;
-}
-
-.ai-settings-form input:focus-visible,
-.ai-settings-form select:focus-visible {
-  border-color: var(--blue);
-  outline: 3px solid color-mix(in srgb, var(--blue) 25%, transparent);
-  outline-offset: 1px;
 }
 
 .ai-settings-actions {
@@ -1244,11 +1210,6 @@
   margin: 15px 0;
 }
 
-.workspace-form {
-  display: grid;
-  gap: 6px;
-}
-
 .native-auth {
   display: grid;
   justify-items: start;
@@ -1299,7 +1260,6 @@
   overflow-wrap: anywhere;
 }
 
-.workspace-form label,
 .workspace-connected strong {
   color: var(--text-secondary);
   font-size: 10px;
@@ -1308,26 +1268,7 @@
 
 .workspace-form__controls {
   display: flex;
-  gap: 7px;
-}
-
-.workspace-form input {
-  width: 100%;
-  min-width: 0;
-  min-height: 36px;
-  padding: 0 10px;
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--text-primary);
-  font: inherit;
-  font-size: 11px;
-}
-
-.workspace-form input:focus-visible {
-  border-color: var(--blue);
-  outline: 3px solid color-mix(in srgb, var(--blue) 25%, transparent);
-  outline-offset: 1px;
+  gap: 8px;
 }
 
 .workspace-form button {
@@ -1388,17 +1329,6 @@
   color: var(--text-secondary);
   font-size: 10px;
   line-height: 1.6;
-}
-
-.website-form {
-  display: grid;
-  gap: 6px;
-}
-
-.website-form label {
-  color: var(--text-secondary);
-  font-size: 10px;
-  font-weight: 650;
 }
 
 .website-list {
@@ -2086,30 +2016,12 @@
 }
 
 .ai-draft__form {
-  display: grid;
-  gap: 8px;
   max-width: 520px;
-}
-
-.ai-draft__form label {
-  font-size: 13px;
-  font-weight: 650;
 }
 
 .ai-draft__form small {
   margin-top: -4px;
   color: var(--text-tertiary);
-}
-
-.ai-draft__form select,
-.ai-draft__form input {
-  min-height: 40px;
-  padding: 0 10px;
-  color: var(--text-primary);
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: 10px;
-  font: inherit;
 }
 
 .ai-draft__result {
@@ -2143,4 +2055,75 @@
 
 .ai-draft__proposed {
   font-weight: 650;
+}
+
+.advanced-audit__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.advanced-audit .pa-tool {
+  margin-top: 8px;
+}
+
+.advanced-audit .pa-report {
+  margin-top: 12px;
+}
+
+.setup-prompt {
+  display: grid;
+  gap: 12px;
+  max-width: 640px;
+  padding: 26px;
+  background: var(--surface);
+  border: 1px dashed var(--border-strong);
+  border-radius: 16px;
+}
+
+.setup-prompt h2 {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: -0.5px;
+}
+
+.setup-prompt p {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.setup-prompt small {
+  color: var(--text-tertiary);
+}
+
+.setup-prompt__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.manual-proposal {
+  margin: 4px 0 18px;
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  background: var(--surface);
+}
+
+.manual-proposal > summary {
+  padding: 14px 16px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.manual-proposal[open] > summary {
+  border-bottom: 1px solid var(--border);
+}
+
+.manual-proposal > form {
+  max-width: 560px;
+  padding: 16px;
 }

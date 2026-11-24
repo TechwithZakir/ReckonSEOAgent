@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { AccountSecurity } from './AccountSecurity'
+import { AdvancedAudit } from './AdvancedAudit'
 import { AIModelSettings } from './AIModelSettings'
 import { OrganizationMembers } from './OrganizationMembers'
 import { PluginTokens } from './PluginTokens'
@@ -17,6 +18,7 @@ type Props = {
   page: string
   accessToken: string
   organization: OrganizationContext | null
+  onNavigate?: (page: string) => void
 }
 
 function pageHeading(kicker: string, title: string, description: string) {
@@ -71,16 +73,75 @@ function LiveAuditFeed({
   )
 }
 
+export type EngineSetup = 'no-website' | 'pending-website' | 'no-crawl'
+
+const SETUP_COPY: Record<EngineSetup, { title: string; body: string; action: string; target: string }> = {
+  'no-website': {
+    title: 'Add a website to unlock this page',
+    body:
+      'This analysis is built from a crawl of a website you own, so it needs a verified site. ' +
+      'Add your domain, then prove ownership with a quick DNS record. It takes a few minutes.',
+    action: 'Add a website',
+    target: 'Websites',
+  },
+  'pending-website': {
+    title: 'Finish verifying your website',
+    body:
+      'Your website is added but ownership is not confirmed yet. Add the DNS TXT record shown on the ' +
+      'Websites page, then press Verify.',
+    action: 'Finish verification',
+    target: 'Websites',
+  },
+  'no-crawl': {
+    title: 'Run your first crawl',
+    body:
+      'Your website is verified. Run a crawl from the SEO Audits page and this page will fill in ' +
+      'with findings from that evidence.',
+    action: 'Open SEO Audits',
+    target: 'Technical audits',
+  },
+}
+
+export function EngineSetupPrompt({
+  kind,
+  onNavigate,
+}: {
+  kind: EngineSetup
+  onNavigate?: (page: string) => void
+}) {
+  const copy = SETUP_COPY[kind]
+  return (
+    <div className="setup-prompt" role="status">
+      <h2>{copy.title}</h2>
+      <p>{copy.body}</p>
+      <div className="setup-prompt__actions">
+        {onNavigate && (
+          <button className="button button--primary" type="button" onClick={() => onNavigate(copy.target)}>
+            {copy.action}
+          </button>
+        )}
+        <button className="button button--secondary" type="button" onClick={() => onNavigate?.('Quick audit')}>
+          Try the free Quick audit
+        </button>
+      </div>
+      <small>The Quick audit works on any public site without verification.</small>
+    </div>
+  )
+}
+
 function LiveEnginePanel({
   accessToken,
   organization,
   engine,
+  onNavigate,
 }: {
   accessToken: string
   organization: OrganizationContext
   engine: EngineName
+  onNavigate?: (page: string) => void
 }) {
   const [audit, setAudit] = useState<EngineAudit | null>(null)
+  const [setup, setSetup] = useState<EngineSetup | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -92,7 +153,7 @@ function LiveEnginePanel({
       if (!verified) {
         if (active) {
           setAudit(null)
-          setError('A verified website is required before an engine audit.')
+          setSetup(websites.length > 0 ? 'pending-website' : 'no-website')
         }
         return
       }
@@ -105,7 +166,7 @@ function LiveEnginePanel({
       if (!completed) {
         if (active) {
           setAudit(null)
-          setError('A completed crawl is required before this engine audit.')
+          setSetup('no-crawl')
         }
         return
       }
@@ -118,6 +179,7 @@ function LiveEnginePanel({
       )
       if (active) {
         setAudit(result)
+        setSetup(null)
         setError(null)
       }
     })().catch((cause: unknown) => {
@@ -129,6 +191,7 @@ function LiveEnginePanel({
   }, [accessToken, organization.organization_id, engine])
 
   if (loading) return <p>Loading engine evidence…</p>
+  if (setup) return <EngineSetupPrompt kind={setup} onNavigate={onNavigate} />
   if (error) return <p className="workspace-setup__error" role="alert">{error}</p>
   if (!audit) return <p>No engine audit is available.</p>
   return (
@@ -151,7 +214,7 @@ function LiveEnginePanel({
   )
 }
 
-export function WorkspacePages({ page, accessToken, organization }: Props) {
+export function WorkspacePages({ page, accessToken, organization, onNavigate }: Props) {
   const [messages, setMessages] = useState<{ role: 'user' | 'assistant'; text: string }[]>([])
   const [prompt, setPrompt] = useState('')
   const [mcpTools, setMcpTools] = useState<{ name: string; read_only: boolean; tenant_scoped: boolean }[]>([])
@@ -204,6 +267,9 @@ export function WorkspacePages({ page, accessToken, organization }: Props) {
             <div className="workspace-card__content">
               <h2>Connect a workspace</h2>
               <p>Website intelligence is available after organization and website authorization.</p>
+              <button className="button button--primary" type="button" onClick={() => onNavigate?.('Overview')}>
+                Go to Overview to connect
+              </button>
             </div>
           </div>
         )}
@@ -217,6 +283,7 @@ export function WorkspacePages({ page, accessToken, organization }: Props) {
         {pageHeading('EVIDENCE-BASED DIAGNOSTICS', 'SEO Audits', 'Run bounded crawls and inspect deterministic findings tied to source URLs.')}
         {organization ? (
           <>
+            <AdvancedAudit accessToken={accessToken} organization={organization} />
             <WebsiteOnboarding accessToken={accessToken} organization={organization} />
             {organization.role !== 'viewer' && (
               <LiveAuditFeed accessToken={accessToken} organization={organization} />
@@ -227,6 +294,9 @@ export function WorkspacePages({ page, accessToken, organization }: Props) {
             <div className="workspace-card__content">
               <h2>Connect a workspace</h2>
               <p>Audits require a verified website and active organization membership.</p>
+              <button className="button button--primary" type="button" onClick={() => onNavigate?.('Overview')}>
+                Go to Overview to connect
+              </button>
             </div>
           </div>
         )}
@@ -280,6 +350,9 @@ export function WorkspacePages({ page, accessToken, organization }: Props) {
             <div className="workspace-card__content">
               <h2>Connect a workspace</h2>
               <p>Agent activity is tenant-scoped.</p>
+              <button className="button button--primary" type="button" onClick={() => onNavigate?.('Overview')}>
+                Go to Overview to connect
+              </button>
             </div>
           </div>
         )}
@@ -308,6 +381,9 @@ export function WorkspacePages({ page, accessToken, organization }: Props) {
             <div className="workspace-card__content">
               <h2>Connect a workspace</h2>
               <p>Recommendations require website evidence and organization authorization.</p>
+              <button className="button button--primary" type="button" onClick={() => onNavigate?.('Overview')}>
+                Go to Overview to connect
+              </button>
             </div>
           </div>
         )}
@@ -329,6 +405,9 @@ export function WorkspacePages({ page, accessToken, organization }: Props) {
             <div className="workspace-card__content">
               <h2>Connect a workspace</h2>
               <p>Approval operations require an active organization.</p>
+              <button className="button button--primary" type="button" onClick={() => onNavigate?.('Overview')}>
+                Go to Overview to connect
+              </button>
             </div>
           </div>
         )}
@@ -347,6 +426,9 @@ export function WorkspacePages({ page, accessToken, organization }: Props) {
             <div className="workspace-card__content">
               <h2>Connect a workspace</h2>
               <p>Select or create an organization to manage client access.</p>
+              <button className="button button--primary" type="button" onClick={() => onNavigate?.('Overview')}>
+                Go to Overview to connect
+              </button>
             </div>
           </div>
         )}
@@ -428,6 +510,9 @@ export function WorkspacePages({ page, accessToken, organization }: Props) {
             <div className="workspace-card__content">
               <h2>Connect a workspace</h2>
               <p>Bot scheduling requires a tenant, verified website and active Redis/Celery execution policy.</p>
+              <button className="button button--primary" type="button" onClick={() => onNavigate?.('Overview')}>
+                Go to Overview to connect
+              </button>
             </div>
           </div>
         )}
@@ -503,6 +588,9 @@ export function WorkspacePages({ page, accessToken, organization }: Props) {
             <div className="workspace-card__content">
               <h2>Connect a workspace</h2>
               <p>Reports are tenant-scoped and require a selected organization.</p>
+              <button className="button button--primary" type="button" onClick={() => onNavigate?.('Overview')}>
+                Go to Overview to connect
+              </button>
             </div>
           </div>
         )}
@@ -540,12 +628,16 @@ export function WorkspacePages({ page, accessToken, organization }: Props) {
             accessToken={accessToken}
             organization={organization}
             engine={engineByPage[page]}
+            onNavigate={onNavigate}
           />
         ) : (
           <div className="workspace-card">
             <div className="workspace-card__content">
               <h2>Connect a workspace</h2>
               <p>Engine findings require verified website crawl evidence.</p>
+              <button className="button button--primary" type="button" onClick={() => onNavigate?.('Overview')}>
+                Go to Overview to connect
+              </button>
             </div>
           </div>
         )}

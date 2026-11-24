@@ -1030,3 +1030,9 @@ executor, SEO engines and the Claude plugin now exist). Remaining gaps:
   `npm test` 128 passed, `vite build` ok; live public audit of reckon.tech returned all new
   checks. The drafting route is tested with a mocked provider and fake site only: no real
   model call, no real WordPress write, and the new panel was not viewed in a browser.
+
+- Follow-up 2026-11-24: the advanced checks were only reachable through the public audit, so the signed-in SEO Audits page showed none of them. Added POST /api/v1/organizations/{org}/websites/{site}/advanced-audit (any member, verified site only, metered, tenant-scoped, no apex/www fallback, not stored) and an Advanced audit panel at the top of SEO Audits (menu: Audit & optimize > Technical audits). Tests: 395 Python, 129 web.
+
+- Follow-up 2026-11-24: engine pages (Keywords, Content Studio, E-Commerce, Enterprise, Media & Query, GEO, LinkPilot, Local SEO) showed a dead-end "A verified website is required" error. They now show a guided setup card (no website / pending DNS verification / no crawl yet) with a button to the right page and a link to the free Quick audit; all "Connect a workspace" cards gained a button to Overview. Web tests: 131.
+
+- Follow-up 2026-11-24: form controls had per-form CSS and selects/textareas were unstyled (inconsistent heights, fonts, borders). Added `apps/web/src/styles/forms.css` as the single design for every text input, select (custom chevron), textarea, label, checkbox, focus/hover/disabled/invalid state, scoped to `.app-shell`; removed the per-form control rules from App.css (landing hero input `.pa-input` stays custom). Approval Inbox: manual proposal form moved under an "advanced" disclosure with a website picker instead of a raw ID. Web tests 131; not viewed in a browser.

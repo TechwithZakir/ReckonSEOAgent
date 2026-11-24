@@ -27,6 +27,7 @@ from reckon_api.routers.platform import router as platform_router
 from reckon_api.routers.organization_management import router as organization_management_router
 from reckon_api.routers.mcp import router as mcp_router
 from reckon_api.routers.cms import router as cms_router
+from reckon_api.routers.advanced_audit import router as advanced_audit_router
 from reckon_api.routers.fix_drafts import router as fix_drafts_router
 from reckon_api.routers.plugin_tokens import router as plugin_tokens_router
 from reckon_api.routers.public_audit import PublicAuditGuard, router as public_audit_router
@@ -196,6 +197,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(plugin_tokens_router)
     app.include_router(public_audit_router)
     app.include_router(fix_drafts_router)
+    app.include_router(advanced_audit_router)
     return app
 
 
