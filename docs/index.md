@@ -8,6 +8,8 @@ lang: en
 
 # Reckon SEO Autopilot: AI-native SEO operations
 
+![Banner](banner.svg)
+
 Reckon SEO Autopilot is an AI-native, multi-tenant SEO operations platform from Reckon Technologies Ltd. Its core idea is a governed agent: it turns evidence from your website into traceable recommendations and, only with authorization, into verified actions. It sits alongside the SEO tools in [ReckonERP](https://app.reckon.tech) as part of Reckon's AI direction.
 
 ## Detailed features
